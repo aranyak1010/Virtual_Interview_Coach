@@ -472,7 +472,7 @@ def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
 
 # Streamlit UI
 def main():
-    st.title("AI-Powered Virtual Interview Coach")
+    st.title("JobGPT - Your Personal AI-Powered Virtual Interview Coach")
     st.write("Analyze your resume, facial expressions, and speech performance.")
     
     # Resume Analysis Section
