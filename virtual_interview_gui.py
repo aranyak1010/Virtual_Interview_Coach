@@ -3,11 +3,13 @@ import cv2
 import mediapipe as mp
 import speech_recognition as sr
 import librosa
+import librosa.display
 import numpy as np
 import soundfile as sf
 import tempfile
 import nltk
 import pytesseract
+import subprocess
 from pdf2image import convert_from_path
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
@@ -178,8 +180,6 @@ def analyze_face():
                 st.write("❌ No face detected. Try again.")
 
 
-
-
 def extract_text_from_pdf(pdf_path):
     try:
         # Remove hardcoded poppler_path - Streamlit Cloud will handle via packages.txt
@@ -193,8 +193,7 @@ def extract_text_from_pdf(pdf_path):
         return ""
 
 
-
-# Function to match resume with job description (No changes needed here)
+# Function to match resume with job description
 def job_description_matching(resume_text, job_description):
     try:
         resume_embedding = bert_model.encode(resume_text, convert_to_numpy=True)
@@ -217,8 +216,84 @@ def job_description_matching(resume_text, job_description):
 def init_recording_state():
     if 'temp_audio_path' not in st.session_state:
         st.session_state.temp_audio_path = None
+    if 'is_recording' not in st.session_state:
+        st.session_state.is_recording = False
+    if 'audio_chunks' not in st.session_state:
+        st.session_state.audio_chunks = []
 
-# Modified speech analysis using browser-based recording
+def start_recording(status_placeholder):
+    st.session_state.is_recording = True
+    st.session_state.audio_chunks = []
+    st.session_state.start_time = time.time()
+    status_placeholder.info("🔴 Recording... Speak clearly into your microphone.")
+    
+    # Start the recording thread
+    threading.Thread(target=record_audio).start()
+
+def record_audio():
+    try:
+        recognizer = sr.Recognizer()
+        with sr.Microphone() as source:
+            recognizer.adjust_for_ambient_noise(source)
+            
+            while st.session_state.is_recording:
+                try:
+                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+                    # Save to a temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+                        f.write(audio.get_wav_data())
+                        st.session_state.audio_chunks.append(f.name)
+                except sr.WaitTimeoutError:
+                    continue
+                except Exception as e:
+                    print(f"Recording error: {e}")
+                    break
+    except Exception as e:
+        print(f"Microphone error: {e}")
+        st.session_state.is_recording = False
+
+def stop_recording():
+    st.session_state.is_recording = False
+    # Allow a small delay for the recording thread to finish
+    time.sleep(0.5)
+
+def process_audio_chunks():
+    if not st.session_state.audio_chunks:
+        return None
+    
+    try:
+        # Create a combined audio file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as combined_file:
+            combined_path = combined_file.name
+            
+        # Combine all chunks into a single audio file
+        combined_audio = None
+        sample_rate = None
+        
+        for chunk_path in st.session_state.audio_chunks:
+            try:
+                y, sr = librosa.load(chunk_path, sr=None)
+                if combined_audio is None:
+                    combined_audio = y
+                    sample_rate = sr
+                else:
+                    combined_audio = np.concatenate((combined_audio, y))
+                    
+                # Clean up the temporary chunk file
+                os.unlink(chunk_path)
+            except Exception as e:
+                print(f"Error processing chunk {chunk_path}: {e}")
+        
+        if combined_audio is not None and sample_rate is not None:
+            sf.write(combined_path, combined_audio, sample_rate)
+            st.session_state.temp_audio_path = combined_path
+            return combined_path
+        
+        return None
+    except Exception as e:
+        st.error(f"Error processing audio: {e}")
+        return None
+
 def speech_analysis_ui():
     st.header("🎙️ Speech Analysis")
     init_recording_state()
@@ -230,17 +305,14 @@ def speech_analysis_ui():
         format="webm"
     )
 
-    if audio_data:
-        # Convert webm to wav
+    if audio_data and 'bytes' in audio_data and 'sample_rate' in audio_data:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tf:
-            write(tf.name, audio_data['sample_rate'], audio_data['bytes'])
+            write(tf.name, audio_data['sample_rate'], np.frombuffer(audio_data['bytes'], dtype=np.int16))
             st.session_state.temp_audio_path = tf.name
 
-        # Playback and analysis
         st.audio(audio_data['bytes'], format="audio/webm")
         analyze_audio()
 
-# Modified analysis function
 def analyze_audio():
     if st.session_state.temp_audio_path:
         try:
@@ -258,7 +330,6 @@ def analyze_audio():
                     st.write(f"• Average Pitch: {avg_pitch:.2f} Hz")
                     st.write(f"• Pitch Variance: {pitch_variance:.2f}")
                 
-                # Visual feedback
                 pitch_status = "✅ Good Variation" if pitch_variance > 20 else "⚠️ Monotonous"
                 sentiment_status = "😊 Positive" if sentiment['compound'] > 0.05 else "😐 Neutral" if sentiment['compound'] > -0.05 else "😟 Negative"
                 
@@ -269,33 +340,27 @@ def analyze_audio():
         except Exception as e:
             st.error(f"Analysis error: {str(e)}")
 
-# Modified analyze_speech function
 def analyze_speech(audio_path):
     recognizer = sr.Recognizer()
     text = "No speech recognized"
-    sentiment = {"compound": 0}
+    sentiment = {"compound": 0, "pos": 0, "neg": 0, "neu": 1.0}
     avg_pitch = 0.0
     pitch_variance = 0.0
 
     try:
-        # Speech to text
         with sr.AudioFile(audio_path) as source:
             audio = recognizer.record(source)
             text = recognizer.recognize_google(audio)
         
-        # Pitch analysis
-        y, sr = librosa.load(audio_path, sr=16000)
+        y, sr_rate = librosa.load(audio_path, sr=16000)
         if len(y) > 0:
-            f0, voiced_flag, _ = librosa.pyin(y, 
-                                            fmin=librosa.note_to_hz('C2'),
-                                            fmax=librosa.note_to_hz('C7'))
-            voiced_pitches = f0[voiced_flag]
-            avg_pitch = np.mean(voiced_pitches) if len(voiced_pitches) > 0 else 0
-            pitch_variance = np.var(voiced_pitches) if len(voiced_pitches) > 0 else 0
+            f0, voiced_flag, _ = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+            voiced_pitches = f0[voiced_flag > 0]  # Fix: Ensure proper boolean indexing
+            if len(voiced_pitches) > 0:  # Fix: Check length instead of using .size
+                avg_pitch = np.mean(voiced_pitches)
+                pitch_variance = np.var(voiced_pitches)
         
-        # Sentiment analysis
         sentiment = get_enhanced_sentiment(text, avg_pitch, pitch_variance)
-
     except sr.UnknownValueError:
         st.warning("Could not understand audio")
     except sr.RequestError as e:
@@ -305,65 +370,36 @@ def analyze_speech(audio_path):
 
     return text, sentiment, avg_pitch, pitch_variance
 
-# Enhanced sentiment analysis function with more sensitivity
 def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
-    """
-    Calculate sentiment with enhanced sensitivity and voice tone adjustment
-    """
-    # Get the base sentiment from VADER
+    sia = SentimentIntensityAnalyzer()
     base_sentiment = sia.polarity_scores(text)
-    
-    # Apply a sensitivity multiplier to make sentiment more pronounced
-    # This helps avoid the "neutral" trap for short or ambiguous phrases
-    sensitivity = 1.5  # Amplify the sentiment
-    
-    # Apply to compound score (but keep within -1 to 1 range)
+    sensitivity = 1.5
     enhanced_sentiment = base_sentiment.copy()
     enhanced_sentiment["compound"] = max(min(base_sentiment["compound"] * sensitivity, 1.0), -1.0)
     
-    # Also adjust the pos/neg values while maintaining their sum with neu
     total = base_sentiment["pos"] + base_sentiment["neg"] + base_sentiment["neu"]
-    
     if base_sentiment["compound"] > 0:
-        # For positive sentiment, boost pos score
         enhanced_sentiment["pos"] = min(base_sentiment["pos"] * sensitivity, total)
         enhanced_sentiment["neu"] = max(total - enhanced_sentiment["pos"] - enhanced_sentiment["neg"], 0)
     elif base_sentiment["compound"] < 0:
-        # For negative sentiment, boost neg score
         enhanced_sentiment["neg"] = min(base_sentiment["neg"] * sensitivity, total)
         enhanced_sentiment["neu"] = max(total - enhanced_sentiment["pos"] - enhanced_sentiment["neg"], 0)
     
-    # Adjust sentiment based on voice pitch and variance when available
-    if avg_pitch is not None:
-        # Deep voice adjustment: Deep voices can be misinterpreted as positive
-        # when they're often neutral or negative
-        if avg_pitch < 120:  # Deep voice threshold
-            # Reduce positive bias for deep voices
-            pitch_adjustment = -0.15  # Slight negative adjustment for deep voices
-            enhanced_sentiment["compound"] = max(min(enhanced_sentiment["compound"] + pitch_adjustment, 1.0), -1.0)
-            
-            # Increase neutral component for deep voices
-            if enhanced_sentiment["compound"] > -0.2 and enhanced_sentiment["compound"] < 0.2:
-                enhanced_sentiment["neu"] = min(enhanced_sentiment["neu"] + 0.2, 1.0)
-                # Adjust pos/neg to maintain proportions
-                total_adjusted = enhanced_sentiment["pos"] + enhanced_sentiment["neg"] + enhanced_sentiment["neu"]
-                scale_factor = 1.0 / total_adjusted if total_adjusted > 0 else 1.0
-                enhanced_sentiment["pos"] *= scale_factor
-                enhanced_sentiment["neg"] *= scale_factor
-                enhanced_sentiment["neu"] *= scale_factor
+    if avg_pitch is not None and avg_pitch < 120:
+        pitch_adjustment = -0.15
+        enhanced_sentiment["compound"] = max(min(enhanced_sentiment["compound"] + pitch_adjustment, 1.0), -1.0)
+        if -0.2 < enhanced_sentiment["compound"] < 0.2:
+            enhanced_sentiment["neu"] = min(enhanced_sentiment["neu"] + 0.2, 1.0)
+            total_adjusted = enhanced_sentiment["pos"] + enhanced_sentiment["neg"] + enhanced_sentiment["neu"]
+            scale_factor = 1.0 / total_adjusted if total_adjusted > 0 else 1.0
+            enhanced_sentiment["pos"] *= scale_factor
+            enhanced_sentiment["neg"] *= scale_factor
+            enhanced_sentiment["neu"] *= scale_factor
     
-    # Adjust for monotonous speech when pitch variance is available
-    if pitch_variance is not None and pitch_variance < 10:  # Low variance = monotonous
-        # Monotonous speech tends toward neutral regardless of words
-        neutrality_boost = 0.25  # Boost neutral component for monotonous speech
-        
-        # Shift compound score toward neutral (0)
+    if pitch_variance is not None and pitch_variance < 10:
+        neutrality_boost = 0.25
         enhanced_sentiment["compound"] *= (1 - neutrality_boost)
-        
-        # Increase neu component
         enhanced_sentiment["neu"] = min(enhanced_sentiment["neu"] + neutrality_boost, 1.0)
-        
-        # Rescale to ensure sum = 1
         total_adjusted = enhanced_sentiment["pos"] + enhanced_sentiment["neg"] + enhanced_sentiment["neu"]
         if total_adjusted > 0:
             scale_factor = 1.0 / total_adjusted
@@ -401,10 +437,10 @@ def main():
     
     # Speech Analysis Section
     st.header("🎙️ Speech Analysis")
-    
+
     # Use a wider column ratio to give more space for the tips
     col1, col2 = st.columns([3, 3])
-    
+
     with col1:
         st.markdown("### Test Your Audio First")
         st.markdown("Check if your microphone is working properly:")
@@ -424,22 +460,19 @@ def main():
         # Create a placeholder for status messages
         status_placeholder = st.empty()
         
-        # NEW: Recording control buttons
+        # Recording control buttons
         col_rec, col_stop, col_process = st.columns(3)
         
         with col_rec:
-            # Play button - starts recording
             if st.button("▶️ Start Recording", disabled=st.session_state.is_recording):
                 start_recording(status_placeholder)
         
         with col_stop:
-            # Stop button - stops recording
             if st.button("⏹️ Stop Recording", disabled=not st.session_state.is_recording):
                 stop_recording()
                 status_placeholder.info("Recording stopped. Click 'Process Recording' to analyze.")
         
         with col_process:
-            # Process button - processes recorded audio
             if st.button("🔄 Process Recording", disabled=st.session_state.is_recording):
                 with st.spinner("Processing your recording..."):
                     audio_path = process_audio_chunks()
@@ -459,24 +492,19 @@ def main():
                         if text and text != "No speech recognized":
                             st.write("**📝 Transcription:**", text)
                             
-                            # Display sentiment with enhanced thresholds for classification
                             sentiment_score = sentiment["compound"]
                             
-                            # Use tighter thresholds to avoid too many "neutral" results
-                            # But also account for deep voice and monotonous speech
                             if avg_pitch < 120 or pitch_variance < 10:
-                                # For deep voices or monotonous speech, use wider neutral range
-                                if sentiment_score > 0.2:  # Higher threshold for positive
+                                if sentiment_score > 0.2:
                                     sentiment_label = "Positive 😊"
                                     sentiment_color = "green"
-                                elif sentiment_score < -0.15:  # Higher threshold for negative
+                                elif sentiment_score < -0.15:
                                     sentiment_label = "Negative 😔"
                                     sentiment_color = "red"
                                 else:
                                     sentiment_label = "Neutral 😐"
                                     sentiment_color = "gray"
                             else:
-                                # Regular thresholds for normal speech
                                 if sentiment_score > 0.1:
                                     sentiment_label = "Positive 😊"
                                     sentiment_color = "green"
@@ -487,45 +515,33 @@ def main():
                                     sentiment_label = "Neutral 😐"
                                     sentiment_color = "gray"
                             
-                            # Display with more detail
                             st.markdown(f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})", unsafe_allow_html=True)
-                            
-                            # Show the components for more insight
                             st.markdown(f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
                             
-                            # Create a sentiment meter
                             sentiment_meter = st.progress(0)
-                            normalized_sentiment = (sentiment_score + 1) / 2  # Convert from [-1,1] to [0,1]
+                            normalized_sentiment = (sentiment_score + 1) / 2
                             sentiment_meter.progress(normalized_sentiment)
                             
                             if avg_pitch > 0:
-                                # Categorize pitch
                                 pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
                                 st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
                             
-                            # Add pitch variance display
                             if pitch_variance > 0:
                                 variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
                                 st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
                         else:
                             st.warning("No speech was recognized. Please try again and speak clearly into the microphone.")
-                            
-                            # Provide troubleshooting advice
                             st.info("Listen to your recording above to check audio quality. If you hear your voice clearly but it's not being recognized, try adjusting your microphone settings.")
                     else:
                         status_placeholder.error("No audio recorded. Try recording again.")
         
-        # Show recording status
         if st.session_state.is_recording:
-            # Display a visual indicator that recording is in progress
             st.markdown("#### 🔴 Recording in progress...")
-            # Show recording duration
             if 'start_time' not in st.session_state:
                 st.session_state.start_time = time.time()
-            
             elapsed = time.time() - st.session_state.start_time
             st.text(f"Recording duration: {int(elapsed // 60):02d}:{int(elapsed % 60):02d}")
-    
+
     with col2:
         st.info("Tips for better speech recording:\n\n"
                 "• Click ▶️ Start Recording to begin\n\n"
