@@ -12,6 +12,9 @@ from pdf2image import convert_from_path
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from nltk.sentiment import SentimentIntensityAnalyzer
+from scipy.io.wavfile import write
+from streamlit_mic_recorder import mic_recorder
+import tempfile
 import time
 import threading
 import os
@@ -210,195 +213,96 @@ def job_description_matching(resume_text, job_description):
         st.error(f"Job matching failed: {e}")
         return 0.0, "Error in matching."
     
-# NEW: Flag to control recording state
+# Initialize session state
 def init_recording_state():
-    if 'is_recording' not in st.session_state:
-        st.session_state.is_recording = False
-    if 'audio_chunks' not in st.session_state:
-        st.session_state.audio_chunks = []
-    if 'recorder_thread' not in st.session_state:
-        st.session_state.recorder_thread = None
     if 'temp_audio_path' not in st.session_state:
         st.session_state.temp_audio_path = None
 
-# NEW: Function to record audio in background thread with control
-def record_audio_thread(stop_event, status_placeholder):
-    recognizer = sr.Recognizer()
-    status_placeholder.info("Recording... (Press Stop when finished)")
-    
-    try:
-        with sr.Microphone(sample_rate=16000) as source:
-            # Adjust for ambient noise
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            
-            # Set parameters for better recognition
-            recognizer.dynamic_energy_threshold = False
-            recognizer.energy_threshold = 300
-            
-            # Keep recording chunks until stop is requested
-            while not stop_event.is_set():
-                try:
-                    # Record for a short duration each time
-                    audio = recognizer.listen(source, timeout=1, phrase_time_limit=10)
-                    st.session_state.audio_chunks.append(audio)
-                except sr.WaitTimeoutError:
-                    # No speech detected in this chunk, continue
-                    continue
-                except Exception as e:
-                    status_placeholder.error(f"Error during chunk recording: {str(e)}")
-                    break
-    except Exception as e:
-        status_placeholder.error(f"Recording thread error: {str(e)}")
-    
-    # Signal that recording has stopped
-    st.session_state.is_recording = False
-    status_placeholder.info("Recording stopped. Process the audio to hear your recording.")
-
-# NEW: Function to start recording
-def start_recording(status_placeholder):
-    # Initialize state if needed
+# Modified speech analysis using browser-based recording
+def speech_analysis_ui():
+    st.header("🎙️ Speech Analysis")
     init_recording_state()
-    
-    # Clear any previous recordings
-    st.session_state.audio_chunks = []
-    
-    if st.session_state.temp_audio_path and os.path.exists(st.session_state.temp_audio_path):
-        try:
-            os.remove(st.session_state.temp_audio_path)
-        except:
-            pass
-    st.session_state.temp_audio_path = None
-    
-    # Create a new stop event
-    stop_event = threading.Event()
-    
-    # Start recording in a separate thread
-    st.session_state.is_recording = True
-    recorder_thread = threading.Thread(
-        target=record_audio_thread,
-        args=(stop_event, status_placeholder)
+
+    # Browser-based audio recording
+    audio_data = mic_recorder(
+        start_prompt="⏺️ Start Recording",
+        stop_prompt="⏹️ Stop Recording",
+        format="webm"
     )
-    recorder_thread.daemon = True
-    recorder_thread.start()
-    
-    # Store the thread and stop event
-    st.session_state.recorder_thread = recorder_thread
-    st.session_state.stop_event = stop_event
 
-# NEW: Function to stop recording
-def stop_recording():
-    if hasattr(st.session_state, 'stop_event'):
-        st.session_state.stop_event.set()
-    st.session_state.is_recording = False
+    if audio_data:
+        # Convert webm to wav
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tf:
+            write(tf.name, audio_data['sample_rate'], audio_data['bytes'])
+            st.session_state.temp_audio_path = tf.name
 
-# NEW: Function to process recorded audio chunks
-def process_audio_chunks():
-    if not st.session_state.audio_chunks:
-        st.warning("No audio recorded. Try recording again.")
-        return None
-    
-    # Create a temporary file to save the combined audio
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-        temp_audio_path = temp_audio.name
-        
-        # Combine audio chunks
-        combined_audio = b""
-        sample_width = None
-        for i, audio_chunk in enumerate(st.session_state.audio_chunks):
-            if i == 0:
-                # Get sample width from first chunk
-                sample_width = audio_chunk.sample_width
-                # Write WAV header
-                combined_audio += audio_chunk.get_wav_data()
+        # Playback and analysis
+        st.audio(audio_data['bytes'], format="audio/webm")
+        analyze_audio()
+
+# Modified analysis function
+def analyze_audio():
+    if st.session_state.temp_audio_path:
+        try:
+            text, sentiment, avg_pitch, pitch_variance = analyze_speech(st.session_state.temp_audio_path)
+            
+            if text and text != "No speech recognized":
+                st.subheader("📊 Analysis Results")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**📝 Recognized Text:**")
+                    st.info(text)
+                    st.write(f"**😊 Sentiment Score:** {sentiment['compound']:.2f}")
+                with col2:
+                    st.write("**🎵 Voice Analysis**")
+                    st.write(f"• Average Pitch: {avg_pitch:.2f} Hz")
+                    st.write(f"• Pitch Variance: {pitch_variance:.2f}")
+                
+                # Visual feedback
+                pitch_status = "✅ Good Variation" if pitch_variance > 20 else "⚠️ Monotonous"
+                sentiment_status = "😊 Positive" if sentiment['compound'] > 0.05 else "😐 Neutral" if sentiment['compound'] > -0.05 else "😟 Negative"
+                
+                st.metric("Sentiment", sentiment_status)
+                st.metric("Pitch Variation", pitch_status)
             else:
-                # Skip header for subsequent chunks
-                chunk_data = audio_chunk.get_wav_data()
-                # Skip first 44 bytes (WAV header) for all but first chunk
-                combined_audio += chunk_data[44:] if len(chunk_data) > 44 else chunk_data
-        
-        # Write combined audio to file
-        temp_audio.write(combined_audio)
-    
-    st.session_state.temp_audio_path = temp_audio_path
-    return temp_audio_path
+                st.warning("No speech detected. Please try again.")
+        except Exception as e:
+            st.error(f"Analysis error: {str(e)}")
 
-# Function to analyze speech with error handling
+# Modified analyze_speech function
 def analyze_speech(audio_path):
-    if not audio_path:
-        return None, None, None, None
-        
     recognizer = sr.Recognizer()
     text = "No speech recognized"
-    sentiment = {"compound": 0, "neg": 0, "neu": 1, "pos": 0}
+    sentiment = {"compound": 0}
     avg_pitch = 0.0
     pitch_variance = 0.0
-    
+
     try:
-        # Load audio with higher quality
+        # Speech to text
         with sr.AudioFile(audio_path) as source:
             audio = recognizer.record(source)
+            text = recognizer.recognize_google(audio)
         
-        # Try to recognize speech with multiple attempts and settings
-        recognition_attempts = [
-            # First attempt: standard Google recognition
-            lambda: recognizer.recognize_google(audio),
-            
-            # Second attempt: Google with increased sensitivity 
-            lambda: recognizer.recognize_google(audio, show_all=False)
-        ]
-        
-        # Try each recognition method until one works
-        for attempt_fn in recognition_attempts:
-            try:
-                text = attempt_fn()
-                if text and text != "":
-                    st.info("Speech recognized successfully")
-                    break
-            except sr.UnknownValueError:
-                continue
-            except sr.RequestError as e:
-                st.error(f"Could not request results from Google Speech Recognition service; {e}")
-                st.info("Check your internet connection.")
-                break
-        
-        # If all attempts failed
-        if text == "No speech recognized" or text == "":
-            st.warning("Speech could not be understood after multiple attempts.")
-            st.info("Try speaking more clearly and louder.")
-            text = "No speech recognized"
-        
-        # Always analyze pitch (works even without recognized text)
-        # Use librosa with better settings for pitch detection
-        y, sr_rate = librosa.load(audio_path, sr=16000)
-        
-        # Use padding to avoid potential librosa errors
+        # Pitch analysis
+        y, sr = librosa.load(audio_path, sr=16000)
         if len(y) > 0:
-            # Ensure the audio is long enough for pitch analysis
-            if len(y) < sr_rate // 10:  # If less than 0.1 seconds
-                y = np.pad(y, (0, sr_rate // 10 - len(y)))
-                
-            # Use pyin instead of yin for more reliable pitch detection
-            f0, voiced_flag, voiced_probs = librosa.pyin(y, 
-                                                       fmin=librosa.note_to_hz('C2'),
-                                                       fmax=librosa.note_to_hz('C7'))
-            
-            # Calculate average pitch only from voiced segments
+            f0, voiced_flag, _ = librosa.pyin(y, 
+                                            fmin=librosa.note_to_hz('C2'),
+                                            fmax=librosa.note_to_hz('C7'))
             voiced_pitches = f0[voiced_flag]
-            avg_pitch = np.mean(voiced_pitches) if len(voiced_pitches) > 0 else 0.0
-            
-            # Calculate pitch variance to detect monotonous speech
-            pitch_variance = np.var(voiced_pitches) if len(voiced_pitches) > 0 else 0.0
-            
-        # Only analyze sentiment if we have text
-        if text != "No speech recognized":
-            # Use enhanced sentiment analysis with pitch information
-            sentiment = get_enhanced_sentiment(text, avg_pitch, pitch_variance)
-    
+            avg_pitch = np.mean(voiced_pitches) if len(voiced_pitches) > 0 else 0
+            pitch_variance = np.var(voiced_pitches) if len(voiced_pitches) > 0 else 0
+        
+        # Sentiment analysis
+        sentiment = get_enhanced_sentiment(text, avg_pitch, pitch_variance)
+
+    except sr.UnknownValueError:
+        st.warning("Could not understand audio")
+    except sr.RequestError as e:
+        st.error(f"Speech service error: {e}")
     except Exception as e:
-        st.error(f"Error during speech analysis: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
-    
+        st.error(f"Analysis error: {str(e)}")
+
     return text, sentiment, avg_pitch, pitch_variance
 
 # Enhanced sentiment analysis function with more sensitivity
