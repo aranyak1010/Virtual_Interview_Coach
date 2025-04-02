@@ -177,11 +177,10 @@ def analyze_face():
 
 
 
-# Function to extract text from resumes
 def extract_text_from_pdf(pdf_path):
     try:
-        poppler_path = r"C:\Program Files\Release-24.08.0-0\poppler-24.08.0\Library\bin"  # Update this to the correct path
-        images = convert_from_path(pdf_path, poppler_path=poppler_path)
+        # Remove hardcoded poppler_path - Streamlit Cloud will handle via packages.txt
+        images = convert_from_path(pdf_path, dpi=500)
         text = ""
         for img in images:
             text += pytesseract.image_to_string(img) + "\n"
@@ -192,7 +191,7 @@ def extract_text_from_pdf(pdf_path):
 
 
 
-# Function to match resume with job description and give feedback
+# Function to match resume with job description (No changes needed here)
 def job_description_matching(resume_text, job_description):
     try:
         resume_embedding = bert_model.encode(resume_text, convert_to_numpy=True)
@@ -479,14 +478,18 @@ def main():
     st.header("📄 Resume Analysis")
     uploaded_file = st.file_uploader("Upload your Resume (PDF)", type=["pdf"])
     job_desc = st.text_area("Paste Job Description Here")
+
     if uploaded_file and job_desc and st.button("Analyze Resume"):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
-            temp_pdf.write(uploaded_file.read())
-            resume_text = extract_text_from_pdf(temp_pdf.name)
-            if resume_text:
-                score, feedback = job_description_matching(resume_text, job_desc)
-                st.write(f"**📊 Job Matching Score:** {score:.2f}")
-                st.write(feedback)
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+                temp_pdf.write(uploaded_file.read())
+                resume_text = extract_text_from_pdf(temp_pdf.name)
+                if resume_text:
+                    score, feedback = job_description_matching(resume_text, job_desc)
+                    st.write(f"**📊 Job Matching Score:** {score:.2f}")
+                    st.write(feedback)
+        except Exception as e:
+            st.error(f"Analysis failed: {str(e)}")
     
     # Facial Analysis Section
     st.header("📷 Facial Expression Analysis")
