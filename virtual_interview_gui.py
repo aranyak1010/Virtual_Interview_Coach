@@ -387,13 +387,16 @@ def analyze_speech(audio_path):
 
     # Implement more reliable pitch analysis based on audio characteristics
     try:
+        # Define sr variable within this scope before using it
+        sample_rate = None  # This allows librosa to use the file's native sample rate
+        
         # Use librosa for audio analysis
-        y, sr = librosa.load(audio_path, sr=None)
+        y, sample_rate = librosa.load(audio_path, sr=sample_rate)
         
         if len(y) > 0:
             # Compute pitch using librosa's pitch tracking
             # This is more reliable than the previous implementation
-            pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+            pitches, magnitudes = librosa.piptrack(y=y, sr=sample_rate)
             
             # Get pitches with significant magnitudes
             pitch_values = []
@@ -416,6 +419,7 @@ def analyze_speech(audio_path):
             pitch_variance = np.random.randint(10, 40)
             
     except Exception as e:
+        print(f"Pitch analysis error: {str(e)}")
         # Fallback to random values as in the original code
         avg_pitch = np.random.randint(80, 220)
         pitch_variance = np.random.randint(5, 50)
