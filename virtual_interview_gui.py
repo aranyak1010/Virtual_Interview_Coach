@@ -15,6 +15,7 @@ from pdf2image import convert_from_path
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from nltk.sentiment import SentimentIntensityAnalyzer
+from scipy.io import wavfile
 from scipy.io.wavfile import write
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
@@ -456,125 +457,131 @@ def main():
     analyze_face()
     
     # Speech Analysis Section
+    # 🎙️ Speech Analysis Section
     st.header("🎙️ Speech Analysis")
+
     col1, col2 = st.columns([3, 3])
 
     with col1:
-        st.markdown("### Test Your Audio First")
-        st.markdown("Check if your microphone is working properly:")
+        st.markdown("### Microphone Check")
 
+    # Set default session states
+        if "recording" not in st.session_state:
+            st.session_state.recording = False
+        if "recording_done" not in st.session_state:
+            st.session_state.recording_done = False
+        if "audio_buffer" not in st.session_state:
+            st.session_state.audio_buffer = []
+        if "audio_path" not in st.session_state:
+            st.session_state.audio_path = None
+
+    # Start WebRTC
         webrtc_ctx = webrtc_streamer(
-            key="audio-test",
+            key="speech-recorder",
             mode=WebRtcMode.SENDRECV,
             media_stream_constraints={"video": False, "audio": True},
-            audio_processor_factory=AudioProcessor,
-            async_processing=True,
+            audio_receiver_size=1024,
         )
 
-        if webrtc_ctx.state.playing:
-            st.success("Microphone connected and working!")
-        else:
-            st.warning("Click 'Allow' when prompted for microphone access.")
+    # Button layout
+        col_start, col_stop = st.columns([1, 1])
+        col_process = st.container()
 
-        st.markdown("---")
+    # Start Recording button
+        if col_start.button("🎙️ Start Recording", disabled=st.session_state.recording):
+            st.session_state.recording = True
+            st.session_state.recording_done = False
+            st.session_state.audio_buffer = []
+            st.success("Recording started. Please speak...")
 
-    # Setup session state
-        if "is_recording" not in st.session_state:
-            st.session_state.is_recording = False
-            st.session_state.start_time = None
+    # Stop Recording button
+        if col_stop.button("⏹️ Stop Recording", disabled=not st.session_state.recording):
+            if st.session_state.audio_buffer:
+                audio_bytes = b''.join([f.to_ndarray().tobytes() for f in st.session_state.audio_buffer])
+                sample_rate = st.session_state.audio_buffer[0].sample_rate
+                audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
 
-    # Start/Stop Recording
-        if webrtc_ctx.audio_processor:
-            col_rec, col_stop, col_process = st.columns(3)
+                wav_filename = "output_recording.wav"
+                wavfile.write(wav_filename, sample_rate, audio_array)
 
-            with col_rec:
-                if st.button("▶️ Start Recording", disabled=st.session_state.is_recording):
-                    audio_chunks.clear()
-                    st.session_state.is_recording = True
-                    webrtc_ctx.audio_processor.recording = True
-                    st.session_state.start_time = time.time()
-                    st.success("Recording started...")
+                st.session_state.audio_path = wav_filename
+                st.session_state.recording_done = True
+                st.success("Recording stopped and saved successfully.")
+            else:
+                st.warning("No audio was recorded.")
+            st.session_state.recording = False
 
-            with col_stop:
-                if st.button("⏹️ Stop Recording", disabled=not st.session_state.is_recording):
-                    st.session_state.is_recording = False
-                    webrtc_ctx.audio_processor.recording = False
-                    st.info("Recording stopped.")
+    # Continuously receive audio only when recording is active
+        if webrtc_ctx.audio_receiver and st.session_state.recording:
+            try:
+                audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=1)
+                st.session_state.audio_buffer.extend(audio_frames)
+                st.info("🎧 Receiving audio...")
+            except:
+                st.warning("⏳ Waiting for audio input...")
 
-            with col_process:
-                if st.button("🔄 Process Recording", disabled=st.session_state.is_recording):
-                    if audio_chunks:
-                    # Save to WAV file
-                        output_path = "recorded_audio.wav"
-                        full_audio = np.concatenate(audio_chunks)
-                        sf.write(output_path, full_audio, 48000)  # 48kHz default from webrtc
+    # Process Recording
+        if col_process.button("🔄 Process Recording"):
+            if st.session_state.get("recording_done", False) and st.session_state.audio_path:
+                with st.spinner("Processing your recording..."):
+                    audio_path = st.session_state.audio_path
+                    st.subheader("Your Recording:")
+                    with open(audio_path, "rb") as audio_file:
+                        audio_bytes = audio_file.read()
+                        st.audio(audio_bytes, format="audio/wav")
 
-                        st.success("Audio processed successfully!")
+                # Run analysis
+                    text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
 
-                    # Playback
-                        st.subheader("Your Recording:")
-                        with open(output_path, "rb") as f:
-                            st.audio(f.read(), format="audio/wav")
+                    if text and text != "No speech recognized":
+                        st.write("**📝 Transcription:**", text)
 
-                    # Analyze the audio
-                        text, sentiment, avg_pitch, pitch_variance = analyze_speech(output_path)
-
-                        if text and text != "No speech recognized":
-                            st.write("**📝 Transcription:**", text)
-
-                            sentiment_score = sentiment["compound"]
-                            if avg_pitch < 120 or pitch_variance < 10:
-                                if sentiment_score > 0.2:
-                                    sentiment_label = "Positive 😊"
-                                    sentiment_color = "green"
-                                elif sentiment_score < -0.15:
-                                    sentiment_label = "Negative 😔"
-                                    sentiment_color = "red"
-                                else:
-                                    sentiment_label = "Neutral 😐"
-                                    sentiment_color = "gray"
+                        sentiment_score = sentiment["compound"]
+                        if avg_pitch < 120 or pitch_variance < 10:
+                            if sentiment_score > 0.2:
+                                sentiment_label, sentiment_color = "Positive 😊", "green"
+                            elif sentiment_score < -0.15:
+                                sentiment_label, sentiment_color = "Negative 😔", "red"
                             else:
-                                if sentiment_score > 0.1:
-                                    sentiment_label = "Positive 😊"
-                                    sentiment_color = "green"
-                                elif sentiment_score < -0.1:
-                                    sentiment_label = "Negative 😔"
-                                    sentiment_color = "red"
-                                else:
-                                    sentiment_label = "Neutral 😐"
-                                    sentiment_color = "gray"
-
-                            st.markdown(f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})", unsafe_allow_html=True)
-                            st.markdown(f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
-
-                            sentiment_meter = st.progress(0)
-                            normalized_sentiment = (sentiment_score + 1) / 2
-                            sentiment_meter.progress(normalized_sentiment)
-
-                            if avg_pitch > 0:
-                                pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
-                                st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
-
-                            if pitch_variance > 0:
-                                variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
-                                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
+                                sentiment_label, sentiment_color = "Neutral 😐", "gray"
                         else:
-                            st.warning("No speech was recognized. Try again and speak clearly.")
-                    else:
-                        st.error("No audio recorded. Please try recording again.")
+                            if sentiment_score > 0.1:
+                                sentiment_label, sentiment_color = "Positive 😊", "green"
+                            elif sentiment_score < -0.1:
+                                sentiment_label, sentiment_color = "Negative 😔", "red"
+                            else:
+                                sentiment_label, sentiment_color = "Neutral 😐", "gray"
 
-        if st.session_state.is_recording:
-            elapsed = time.time() - st.session_state.start_time
-            st.markdown("#### 🔴 Recording in progress...")
-            st.text(f"Recording duration: {int(elapsed // 60):02d}:{int(elapsed % 60):02d}")
+                        st.markdown(
+                            f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
+                            unsafe_allow_html=True)
+                        st.markdown(
+                            f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
+
+                        sentiment_meter = st.progress(0)
+                        normalized_sentiment = (sentiment_score + 1) / 2
+                        sentiment_meter.progress(normalized_sentiment)
+
+                        if avg_pitch > 0:
+                            pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
+                            st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
+
+                        if pitch_variance > 0:
+                            variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
+                            st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
+                    else:
+                        st.warning("No speech was recognized. Please try again and speak clearly.")
+            else:
+                st.warning("Please record and stop recording first.")
 
     with col2:
-        st.info("Tips for better speech recording:\n\n"
-                "• Click ▶️ Start Recording to begin\n\n"
-                "• Speak clearly at a moderate pace\n\n"
-                "• Click ⏹️ Stop Recording when finished\n\n"
-                "• Click 🔄 Process Recording to analyze\n\n"
-                "• Reduce background noise for best results")
+        st.info("**Tips for better speech recording:**\n\n"
+                "• Click **Start Recording** to begin\n\n"
+                "• Speak clearly and confidently\n\n"
+                "• Click **Stop Recording** to finish\n\n"
+                "• Then, click **Process Recording** to analyze speech\n\n"
+                "• Keep background noise to a minimum for best results.")
+
 
 if __name__ == "__main__":
     main()
