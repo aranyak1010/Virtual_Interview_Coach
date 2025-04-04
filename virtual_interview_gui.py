@@ -456,7 +456,6 @@ def main():
     st.header("📷 Facial Expression Analysis")
     analyze_face()
     
-    # Speech Analysis Section
     # 🎙️ Speech Analysis Section
     st.header("🎙️ Speech Analysis")
 
@@ -475,48 +474,52 @@ def main():
         if "audio_path" not in st.session_state:
             st.session_state.audio_path = None
 
-    # Start WebRTC
+    # WebRTC for Audio Streaming
         webrtc_ctx = webrtc_streamer(
             key="speech-recorder",
             mode=WebRtcMode.SENDRECV,
             media_stream_constraints={"video": False, "audio": True},
-            audio_receiver_size=1024,
+            async_processing=True,
         )
 
-    # Button layout
+    # Buttons Layout
         col_start, col_stop = st.columns([1, 1])
         col_process = st.container()
 
-    # Start Recording button
+    # Start Recording
         if col_start.button("🎙️ Start Recording", disabled=st.session_state.recording):
             st.session_state.recording = True
             st.session_state.recording_done = False
             st.session_state.audio_buffer = []
             st.success("Recording started. Please speak...")
 
-    # Stop Recording button
+    # Stop Recording
         if col_stop.button("⏹️ Stop Recording", disabled=not st.session_state.recording):
             if st.session_state.audio_buffer:
-                audio_bytes = b''.join([f.to_ndarray().tobytes() for f in st.session_state.audio_buffer])
-                sample_rate = st.session_state.audio_buffer[0].sample_rate
-                audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                try:
+                    audio_bytes = b''.join([f.to_ndarray().tobytes() for f in st.session_state.audio_buffer])
+                    sample_rate = st.session_state.audio_buffer[0].sample_rate
+                    audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
 
-                wav_filename = "output_recording.wav"
-                wavfile.write(wav_filename, sample_rate, audio_array)
+                    wav_filename = "output_recording.wav"
+                    wavfile.write(wav_filename, sample_rate, audio_array)
 
-                st.session_state.audio_path = wav_filename
-                st.session_state.recording_done = True
-                st.success("Recording stopped and saved successfully.")
+                    st.session_state.audio_path = wav_filename
+                    st.session_state.recording_done = True
+                    st.success("Recording stopped and saved successfully.")
+                except Exception as e:
+                    st.error(f"Error while saving recording: {e}")
             else:
                 st.warning("No audio was recorded.")
             st.session_state.recording = False
 
-    # Continuously receive audio only when recording is active
+    # Capture Audio from WebRTC Stream
         if webrtc_ctx.audio_receiver and st.session_state.recording:
             try:
                 audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=1)
-                st.session_state.audio_buffer.extend(audio_frames)
-                st.info("🎧 Receiving audio...")
+                if audio_frames:
+                    st.session_state.audio_buffer.extend(audio_frames)
+                    st.info("🎧 Receiving audio...")
             except:
                 st.warning("⏳ Waiting for audio input...")
 
