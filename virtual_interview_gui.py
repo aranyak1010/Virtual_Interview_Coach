@@ -20,6 +20,7 @@ from scipy.io.wavfile import write
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
 from pydub import AudioSegment
+from virtual_interview_gui import analyze_speech
 import pyaudio
 import tempfile
 import time
