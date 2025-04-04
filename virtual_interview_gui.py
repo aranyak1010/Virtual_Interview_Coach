@@ -448,23 +448,17 @@ def main():
     with col1:
         st.markdown("### Test Your Audio First")
         st.markdown("Check if your microphone is working properly:")
-
-    # WebRTC audio streaming
-        def audio_frame_callback(frame: av.AudioFrame):
-            return frame  # Just pass through audio frames for testing
-
+    
         webrtc_ctx = webrtc_streamer(
-            key="test_mic",
+            key="speech-recorder",
             mode=WebRtcMode.SENDRECV,
-            audio=True,
-            video=False,
-            async_processing=True
+            media_stream_constraints={"video": False, "audio": True},
         )
-
+    
         if webrtc_ctx.audio_receiver:
-            st.success("✅ Microphone detected and working!")
+            st.success("Microphone connected and working!")
         else:
-            st.error("❌ No microphone input detected. Please check your microphone settings.")
+            st.error("Microphone error: No Default Input Device Available")
         
         st.markdown("---")
         
