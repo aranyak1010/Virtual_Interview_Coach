@@ -488,103 +488,102 @@ def main():
     analyze_face()
     
     # 🎙️ Speech Analysis Section
-    def speech_analysis_section():
-        st.header("🎙️ Speech Analysis")
+    st.header("🎙️ Speech Analysis")
 
-        col1, col2 = st.columns([3, 3])
+    col1, col2 = st.columns([3, 3])
 
-        with col1:
-            st.markdown("### Microphone Check")
+    with col1:
+        st.markdown("### Microphone Check")
 
         # Use the more reliable streamlit-mic-recorder instead of WebRTC
-            audio_data = mic_recorder(
-                key="speech-recorder",
-                start_prompt="🎙️ Start Recording",
-                stop_prompt="⏹️ Stop Recording",
-                format="webm",
-                use_container_width=True
-            )
+        audio_data = mic_recorder(
+            key="speech-recorder",
+            start_prompt="🎙️ Start Recording",
+            stop_prompt="⏹️ Stop Recording",
+            format="webm",
+            use_container_width=True
+        )
 
-            col_process = st.container()
+        col_process = st.container()
 
-            if audio_data:
+        if audio_data:
             # Process recorded audio
-                with st.spinner("Processing your recording..."):
+            with st.spinner("Processing your recording..."):
                 # Save audio to temp file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-                        try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+                    try:
                         # If sample_rate is provided
-                            if 'sample_rate' in audio_data:
-                                write(temp_file.name, audio_data['sample_rate'], np.frombuffer(audio_data['bytes'], dtype=np.int16))
-                            else:
+                        if 'sample_rate' in audio_data:
+                            write(temp_file.name, audio_data['sample_rate'], np.frombuffer(audio_data['bytes'], dtype=np.int16))
+                        else:
                             # Use default sample rate
-                                write(temp_file.name, 16000, np.frombuffer(audio_data['bytes'], dtype=np.int16))
+                            write(temp_file.name, 16000, np.frombuffer(audio_data['bytes'], dtype=np.int16))
                         
-                            audio_path = temp_file.name
+                        audio_path = temp_file.name
                         
                         # Display audio player
-                            st.subheader("Your Recording:")
-                            st.audio(audio_data['bytes'], format="audio/webm")
+                        st.subheader("Your Recording:")
+                        st.audio(audio_data['bytes'], format="audio/webm")
                         
                         # Run analysis
-                            text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
+                        text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
                         
-                            if text and text != "No speech recognized":
-                                st.write("**📝 Transcription:**", text)
+                        if text and text != "No speech recognized":
+                            st.write("**📝 Transcription:**", text)
                             
-                                sentiment_score = sentiment["compound"]
-                                if avg_pitch < 120 or pitch_variance < 10:
-                                    if sentiment_score > 0.2:
-                                        sentiment_label, sentiment_color = "Positive 😊", "green"
-                                    elif sentiment_score < -0.15:
-                                        sentiment_label, sentiment_color = "Negative 😔", "red"
-                                    else:
-                                        sentiment_label, sentiment_color = "Neutral 😐", "gray"
+                            sentiment_score = sentiment["compound"]
+                            if avg_pitch < 120 or pitch_variance < 10:
+                                if sentiment_score > 0.2:
+                                    sentiment_label, sentiment_color = "Positive 😊", "green"
+                                elif sentiment_score < -0.15:
+                                    sentiment_label, sentiment_color = "Negative 😔", "red"
                                 else:
-                                    if sentiment_score > 0.1:
-                                        sentiment_label, sentiment_color = "Positive 😊", "green"
-                                    elif sentiment_score < -0.1:
-                                        sentiment_label, sentiment_color = "Negative 😔", "red"
-                                    else:
-                                        sentiment_label, sentiment_color = "Neutral 😐", "gray"
-                            
-                                st.markdown(
-                                    f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
-                                unsafe_allow_html=True)
-                                st.markdown(
-                                    f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
-                            
-                                sentiment_meter = st.progress(0)
-                                normalized_sentiment = (sentiment_score + 1) / 2
-                                sentiment_meter.progress(normalized_sentiment)
-                            
-                                if avg_pitch > 0:
-                                    pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
-                                    st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
-                            
-                                if pitch_variance > 0:
-                                    variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
-                                    st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
+                                    sentiment_label, sentiment_color = "Neutral 😐", "gray"
                             else:
-                                st.warning("No speech was recognized. Please try again and speak clearly.")
+                                if sentiment_score > 0.1:
+                                    sentiment_label, sentiment_color = "Positive 😊", "green"
+                                elif sentiment_score < -0.1:
+                                    sentiment_label, sentiment_color = "Negative 😔", "red"
+                                else:
+                                    sentiment_label, sentiment_color = "Neutral 😐", "gray"
+                            
+                            st.markdown(
+                                f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
+                            unsafe_allow_html=True)
+                            st.markdown(
+                                f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
+                            
+                            sentiment_meter = st.progress(0)
+                            normalized_sentiment = (sentiment_score + 1) / 2
+                            sentiment_meter.progress(normalized_sentiment)
+                            
+                            if avg_pitch > 0:
+                                pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
+                                st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
+                            
+                            if pitch_variance > 0:
+                                variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
+                                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
+                        else:
+                            st.warning("No speech was recognized. Please try again and speak clearly.")
                     
-                        except Exception as e:
-                            st.error(f"Error processing audio: {str(e)}")
+                    except Exception as e:
+                        st.error(f"Error processing audio: {str(e)}")
                     
-                        finally:
+                    finally:
                         # Clean up temp file
-                            try:
-                                os.unlink(temp_file.name)
-                            except:
-                                pass
+                        try:
+                            os.unlink(temp_file.name)
+                        except:
+                            pass
 
-        with col2:
-            st.info("**Tips for better speech recording:**\n\n"
-                    "• Click **Start Recording** to begin\n\n"
-                    "• Speak clearly and confidently\n\n"
-                    "• Click **Stop Recording** to finish\n\n"
-                    "• The recording will be automatically analyzed\n\n"
-                    "• Keep background noise to a minimum for best results.")
+    with col2:
+        st.info("**Tips for better speech recording:**\n\n"
+                "• Click **Start Recording** to begin\n\n"
+                "• Speak clearly and confidently\n\n"
+                "• Click **Stop Recording** to finish\n\n"
+                "• The recording will be automatically analyzed\n\n"
+                "• Keep background noise to a minimum for best results.")
 
 
 if __name__ == "__main__":
