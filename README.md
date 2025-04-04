@@ -63,7 +63,7 @@ Run the app:
 
 ```bash
 
-streamlit run app.py
+streamlit run virtual_interview_gui.py
 ```
 
 ## 🖥️ Usage
