@@ -365,29 +365,85 @@ def analyze_speech(audio_path):
     recognizer = sr.Recognizer()
     sentiment_analyzer = SentimentIntensityAnalyzer()
     
+    # Adjust recognizer settings to be more lenient
+    recognizer.energy_threshold = 300  # Lower energy threshold
+    recognizer.dynamic_energy_threshold = True
+    recognizer.pause_threshold = 0.8  # More forgiving pause threshold
+    
     # Load the audio file
     try:
-        with sr.AudioFile(audio_path) as source:
-            # Adjust for ambient noise to improve recognition
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            audio_data = recognizer.record(source)
+        print(f"Loading audio file from: {audio_path}")
+        # First try with AudioFile
+        try:
+            with sr.AudioFile(audio_path) as source:
+                # Reduce ambient noise adjustment duration
+                recognizer.adjust_for_ambient_noise(source, duration=0.2)
+                audio_data = recognizer.record(source)
+                
+                # Try recognition with more attempts and options
+                try:
+                    # First try with Google (most reliable)
+                    text = recognizer.recognize_google(audio_data)
+                    print(f"Google recognition successful: {text}")
+                except sr.UnknownValueError:
+                    # If Google fails, try with Sphinx (offline)
+                    try:
+                        import speech_recognition as sr_import
+                        text = recognizer.recognize_sphinx(audio_data)
+                        print(f"Sphinx recognition successful: {text}")
+                    except:
+                        # If both fail, use a more forgiving message
+                        text = "No speech recognized"
+                        print("Both Google and Sphinx recognition failed")
+                except sr.RequestError as e:
+                    text = f"Could not request results from Google Speech Recognition service: {e}"
+                    print(text)
+                except Exception as e:
+                    text = f"Error in recognition: {str(e)}"
+                    print(text)
+        except Exception as source_error:
+            # If AudioFile approach fails, try converting with librosa first
+            print(f"AudioFile approach failed: {source_error}, trying librosa conversion")
+            
+            # Load with librosa and convert
+            y, sample_rate = librosa.load(audio_path, sr=None)
+            
+            # Create a temporary WAV file that SpeechRecognition can definitely handle
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
+                temp_wav_path = temp_wav.name
+                
+            wavfile.write(temp_wav_path, y, sample_rate)
+            
+            # Try again with the converted file
+            with sr.AudioFile(temp_wav_path) as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.2)
+                audio_data = recognizer.record(source)
+                try:
+                    text = recognizer.recognize_google(audio_data)
+                    print(f"Recognition successful after conversion: {text}")
+                except sr.UnknownValueError:
+                    text = "No speech recognized"
+                    print("Recognition failed after conversion")
+                except Exception as e:
+                    text = f"Error: {str(e)}"
+                    print(text)
+            
+            # Clean up temp file
             try:
-                text = recognizer.recognize_google(audio_data)
-            except sr.UnknownValueError:
-                text = "No speech recognized"
-            except sr.RequestError:
-                text = "Could not request results from Google Speech Recognition service"
-            except Exception as e:
-                text = f"Error: {str(e)}"
+                os.unlink(temp_wav_path)
+            except:
+                pass
+            
     except Exception as e:
-        return f"Error opening audio file: {str(e)}", {"compound": 0, "pos": 0, "neg": 0, "neu": 1}, 0, 0
+        print(f"Critical error in speech processing: {str(e)}")
+        return f"Error processing audio: {str(e)}", {"compound": 0, "pos": 0, "neg": 0, "neu": 1}, 0, 0
 
     # Calculate sentiment scores
     sentiment = sentiment_analyzer.polarity_scores(text) if text and text != "No speech recognized" else {"compound": 0, "pos": 0, "neg": 0, "neu": 1}
 
     # Implement more reliable pitch analysis based on audio characteristics
     try:
-        # Define sr variable within this scope before using it
+        # Define sample_rate variable within this scope before using it
         sample_rate = None  # This allows librosa to use the file's native sample rate
         
         # Use librosa for audio analysis
@@ -395,7 +451,6 @@ def analyze_speech(audio_path):
         
         if len(y) > 0:
             # Compute pitch using librosa's pitch tracking
-            # This is more reliable than the previous implementation
             pitches, magnitudes = librosa.piptrack(y=y, sr=sample_rate)
             
             # Get pitches with significant magnitudes
@@ -515,19 +570,50 @@ def main():
             with st.spinner("Processing your recording..."):
                 # Save audio to temp file
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-                    try:
-                        # If sample_rate is provided
-                        if 'sample_rate' in audio_data:
-                            write(temp_file.name, audio_data['sample_rate'], np.frombuffer(audio_data['bytes'], dtype=np.int16))
-                        else:
-                            # Use default sample rate
-                            write(temp_file.name, 16000, np.frombuffer(audio_data['bytes'], dtype=np.int16))
-                        
+                    # Display debug info
+                    st.write("Debug info:", {k: type(v) for k, v in audio_data.items()})
+                
+                # Write audio bytes to file with proper format conversion
+                    audio_bytes = audio_data['bytes']
+                
+                # Check if we need to convert from webm to wav
+                    if 'format' in audio_data and audio_data['format'] == 'webm':
+                    # Save the webm data first
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as webm_file:
+                            webm_file.write(audio_bytes)
+                            webm_path = webm_file.name
+                    
+                    # Convert webm to wav using ffmpeg (make sure ffmpeg is installed)
                         audio_path = temp_file.name
-                        
-                        # Display audio player
-                        st.subheader("Your Recording:")
-                        st.audio(audio_data['bytes'], format="audio/webm")
+                        try:
+                            import subprocess
+                            subprocess.call(['ffmpeg', '-i', webm_path, '-acodec', 'pcm_s16le', '-ar', '16000', audio_path])
+                            os.unlink(webm_path)  # Clean up webm file
+                        except Exception as e:
+                            st.error(f"Error converting audio format: {e}")
+                        # Fallback: write raw bytes and hope for the best
+                            temp_file.write(audio_bytes)
+                            audio_path = temp_file.name
+                    else:
+                    # If sample_rate is provided
+                        if 'sample_rate' in audio_data:
+                            write(temp_file.name, audio_data['sample_rate'], np.frombuffer(audio_bytes, dtype=np.int16))
+                        else:
+                        # Use default sample rate
+                            write(temp_file.name, 16000, np.frombuffer(audio_bytes, dtype=np.int16))
+                    
+                        audio_path = temp_file.name
+                
+                # Display audio player
+                    st.subheader("Your Recording:")
+                    st.audio(audio_bytes, format="audio/webm")
+                
+                # Debug info - write audio file details
+                    try:
+                        y, sr = librosa.load(audio_path, sr=None)
+                        st.write(f"Audio info: {len(y)} samples, {sr} Hz sample rate, {len(y)/sr:.2f} seconds")
+                    except Exception as e:
+                        st.write(f"Audio info error: {e}")
                         
                         # Run analysis
                         text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
@@ -569,7 +655,15 @@ def main():
                                 variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
                                 st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
                         else:
-                            st.warning("No speech was recognized. Please try again and speak clearly.")
+                            st.warning("No speech was recognized. This could be due to several reasons:")
+                            st.markdown("""
+                            - Background noise may be too high
+                            - The microphone might be too far away
+                            - The speech might be too quiet
+                            - The audio format may not be compatible
+                    
+                            Try speaking louder and closer to the microphone, or check your browser's microphone permissions.
+                            """)
                     
                     except Exception as e:
                         st.error(f"Error processing audio: {str(e)}")
