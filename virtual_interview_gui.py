@@ -10,12 +10,16 @@ import tempfile
 import nltk
 import pytesseract
 import subprocess
+from streamlit_mic_recorder import mic_recorder
 from pdf2image import convert_from_path
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from nltk.sentiment import SentimentIntensityAnalyzer
 from scipy.io.wavfile import write
-from streamlit_mic_recorder import mic_recorder
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
+import av
+from pydub import AudioSegment
+import pyaudio
 import tempfile
 import time
 import threading
