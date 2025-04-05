@@ -391,7 +391,7 @@ def main():
     st.header("📷 Facial Expression Analysis")
     analyze_face()
     
-    # 🎙️ Speech Analysis Section
+    # Speech analysis section
     st.header("🎙️ Speech Analysis")
 
     col1, col2 = st.columns([3, 3])
@@ -408,7 +408,7 @@ def main():
             use_container_width=True
         )
 
-        # If we have audio data, process it with our simplified pipeline
+        # If we have audio data, process it
         if audio_data:
             text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
             
