@@ -9,7 +9,6 @@ import io
 from pydub import AudioSegment
 from streamlit_mic_recorder import mic_recorder
 import streamlit as st
-import magic
 
 def analyze_speech_simplified(audio_path):
     """
@@ -218,14 +217,14 @@ def process_audio_recording(audio_data):
             
             print(f"Raw audio saved to {audio_path}")
             
-            # Try to extract audio format information
-            try:
-                # Try to determine the actual format
+            # # Try to extract audio format information
+            # try:
+            #     # Try to determine the actual format
                 
-                file_type = magic.from_file(audio_path)
-                print(f"File type detected: {file_type}")
-            except:
-                print("Could not detect file type with magic library")
+            #     file_type = magic.from_file(audio_path)
+            #     print(f"File type detected: {file_type}")
+            # except:
+            #     print("Could not detect file type with magic library")
             
             # Convert audio using pydub with extra care
             try:
