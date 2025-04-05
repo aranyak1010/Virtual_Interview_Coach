@@ -394,21 +394,29 @@ def main():
     # Speech analysis section
     st.header("🎙️ Speech Analysis")
 
+    # Fix 12: Added debug info toggle
+    show_debug = st.sidebar.checkbox("Show Debug Info", value=False)
+    
     col1, col2 = st.columns([3, 3])
 
     with col1:
         st.markdown("### Microphone Check")
 
-        # Use the streamlit-mic-recorder with minimal settings
+        # Fix 13: Updated recorder with more options
         audio_data = mic_recorder(
             key="speech-recorder",
             start_prompt="🎙️ Start Recording",
             stop_prompt="⏹️ Stop Recording",
-            format="webm",  # Use webm format which is more reliable
+            format="webm",
+            sampling_rate=16000,  # 16kHz sampling rate
             use_container_width=True
         )
 
-        # If we have audio data, process it
+        # Fix 14: Add debug information for troubleshooting
+        if show_debug and audio_data:
+            st.write(f"Raw audio data length: {len(audio_data.get('bytes', b''))} bytes")
+        
+        # Process audio data if available
         if audio_data:
             text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
             
@@ -439,27 +447,57 @@ def main():
                 variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
                 st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
             elif text == "No speech detected":
-                st.warning("No speech was detected in your recording. Please try again and speak clearly.")
+                st.warning("No speech was detected in your recording. Please try again and speak clearly and louder.")
+                
+                # Fix 15: Added more helpful suggestions
+                st.info("""
+                **Tips for better speech detection:**
+                
+                • Speak louder and closer to the microphone
+                • Try using headphones with a microphone
+                • Make sure your browser has microphone permissions
+                • Try a recording of at least 2-3 seconds
+                • Test your microphone in another application first
+                """)
 
     with col2:
         st.info("**Tips for better speech recording:**\n\n"
                 "• Click **Start Recording** to begin\n\n"
-                "• Speak clearly and confidently\n\n"
-                "• Click **Stop Recording** to finish\n\n"
-                "• The recording will be automatically analyzed\n\n"
-                "• Keep background noise to a minimum for best results.")
+                "• Speak clearly and loudly\n\n"
+                "• Record for at least 2-3 seconds\n\n"
+                "• Keep background noise to a minimum\n\n"
+                "• Use Chrome or Edge for best results")
                 
-        # Add troubleshooting tips
+        # Expanded troubleshooting section
         with st.expander("Troubleshooting Audio Issues"):
             st.markdown("""
-            **If your recording isn't being processed:**
+            **Common Issues and Solutions:**
             
-            1. **Try a shorter recording** - Just 5-10 seconds is enough
-            2. **Make sure your microphone is working** - Test it in another app
-            3. **Check browser permissions** - Make sure your browser has microphone access
-            4. **Speak louder** - The app needs to detect speech to process it
-            5. **Try a different browser** - Chrome works best with audio recording
-            6. **Restart the app** - Sometimes a fresh start helps
+            1. **"No speech detected" message**
+               - Speak louder and closer to the microphone
+               - Make sure your microphone isn't muted
+               - Try a different browser (Chrome works best)
+               - Check that your microphone is working in other applications
+            
+            2. **Browser Permission Issues**
+               - Click the lock/info icon in your address bar
+               - Ensure microphone permissions are set to "Allow"
+               - Try clearing your browser cache and reloading
+            
+            3. **Technical Requirements**
+               - Make sure you have all required libraries installed:
+                 ```
+                 pip install streamlit streamlit-mic-recorder pydub nltk numpy SpeechRecognition
+                 ```
+               - If using Linux, you may need additional system packages:
+                 ```
+                 sudo apt-get install portaudio19-dev python-pyaudio python3-pyaudio
+                 ```
+               
+            4. **Audio Format Issues**
+               - Try restarting your browser
+               - Some virtual environments or older browsers may have compatibility issues
+               - Make sure your computer's audio drivers are up to date
             """)
 
 
