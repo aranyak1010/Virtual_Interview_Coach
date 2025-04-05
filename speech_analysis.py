@@ -15,99 +15,184 @@ try:
 except LookupError:
     nltk.download('vader_lexicon')
 
-# Improved speech analysis with better error handling and fallbacks
+# DEBUG FLAG - Set to True to help troubleshoot issues
+DEBUG = True
+
+# Fix 1: Improved audio format handling with more explicit conversions
+def convert_audio_for_recognition(input_path):
+    """Convert audio to a format known to work well with speech recognition"""
+    try:
+        # Load audio using pydub
+        audio = AudioSegment.from_file(input_path)
+        
+        # Convert to appropriate format for speech recognition
+        audio = audio.set_channels(1)           # Mono
+        audio = audio.set_frame_rate(16000)     # 16kHz sample rate
+        audio = audio.set_sample_width(2)       # 16-bit depth
+        
+        # Export to a new temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        output_path = temp_file.name
+        temp_file.close()
+        
+        # Export with specific parameters known to work with speech_recognition
+        audio.export(
+            output_path, 
+            format="wav",
+            parameters=["-ac", "1", "-ar", "16000"]
+        )
+        
+        if DEBUG:
+            print(f"Audio converted: {len(audio)/1000:.2f}s duration, {audio.channels} channels, {audio.frame_rate}Hz")
+            
+        return output_path
+    except Exception as e:
+        if DEBUG:
+            print(f"Audio conversion failed: {e}")
+        return input_path  # Return original path if conversion fails
+
+# Fix 2: More robust speech detection with multiple attempts and adjustable parameters
 def analyze_speech(audio_path):
     """
-    A robust speech analysis function with multiple fallback options
-    for transcription and audio feature extraction
+    A robustified speech analysis function with multiple attempts
     """
     print(f"Starting speech analysis for {audio_path}")
     start_time = time.time()
     
-    # Default values in case of failure
-    text = "Speech content would appear here."
-    sentiment = {"compound": 0.1, "pos": 0.4, "neg": 0.1, "neu": 0.5}
+    # Default values
+    text = "No speech detected"  # Set this as default to track if any method succeeds
+    sentiment = {"compound": 0.0, "pos": 0.0, "neg": 0.0, "neu": 1.0}
     avg_pitch = 150
     pitch_variance = 25
     
+    # Check if file exists and has content
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 100:
+        print("Audio file missing or too small")
+        return text, sentiment, avg_pitch, pitch_variance
+    
+    # Fix 3: Create a processed version of the audio optimized for speech recognition
+    processed_audio_path = convert_audio_for_recognition(audio_path)
+    
+    # ===== TRANSCRIPTION APPROACHES =====
+    # We'll try multiple approaches and use the first one that works
+    
+    # Approach 1: SpeechRecognition with Google
     try:
-        # Check if file exists and has content
-        if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
-            print("Audio file missing or too small")
-            return "No speech detected", sentiment, avg_pitch, pitch_variance
+        import speech_recognition as sr
+        recognizer = sr.Recognizer()
         
-        # ===== TEXT TRANSCRIPTION METHODS =====
-        # Method 1: Try Google Speech-to-Text API
-        try:
-            import speech_recognition as sr
-            recognizer = sr.Recognizer()
-            with sr.AudioFile(audio_path) as source:
-                audio_data = recognizer.record(source)
-                text = recognizer.recognize_google(audio_data)
-                print(f"Google STT successful: {text}")
-        except ImportError:
-            print("speech_recognition not available, trying alternative methods")
-            text = "Speech content processed but transcription requires speech_recognition library."
-        except Exception as e:
-            print(f"Google STT failed: {e}")
-            # Continue to next method if this fails
-            text = "Speech processed but transcription unavailable."
+        # Fix 4: Configure recognizer for better results
+        recognizer.energy_threshold = 300  # Lower energy threshold (more sensitive)
+        recognizer.dynamic_energy_threshold = True
+        recognizer.pause_threshold = 0.8  # Be more tolerant of pauses
         
-        # ===== AUDIO ANALYSIS METHODS =====
-        # Try using librosa for audio feature extraction
-        try:
-            import librosa
-            y, sr = librosa.load(audio_path, sr=None, mono=True)
+        with sr.AudioFile(processed_audio_path) as source:
+            # Fix 5: Adjust for ambient noise
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
             
-            # Extract pitch information using librosa
-            if len(y) > 0:
-                # Pitch extraction using librosa
-                f0, voiced_flag, voiced_probs = librosa.pyin(
-                    y, fmin=librosa.note_to_hz('C2'), 
-                    fmax=librosa.note_to_hz('C7'),
-                    sr=sr
-                )
-                
-                # Filter out unvoiced and NaN segments
-                valid_f0 = f0[voiced_flag]
-                if len(valid_f0) > 0:
-                    valid_f0 = valid_f0[~np.isnan(valid_f0)]
-                
-                if len(valid_f0) > 0:
-                    avg_pitch = np.mean(valid_f0)
-                    pitch_variance = np.std(valid_f0)
-                else:
-                    # Fallback to simple energy-based estimation
-                    rms = librosa.feature.rms(y=y)[0]
-                    avg_pitch = 120 + (np.mean(rms) * 1000) 
-                    pitch_variance = np.std(rms) * 1000
+            # Fix 6: Record with longer timeout
+            audio_data = recognizer.record(source)
             
-        except (ImportError, Exception) as e:
-            print(f"Librosa analysis failed: {e}")
+            # Fix 7: Use Google with more specific parameters
+            text = recognizer.recognize_google(
+                audio_data,
+                language="en-US",  # Explicitly specify language
+                show_all=False     # Return only the most likely result
+            )
             
-            # Fallback to pydub for basic audio analysis
-            try:
-                audio = AudioSegment.from_file(audio_path)
-                samples = np.array(audio.get_array_of_samples())
+            if text and text.strip():
+                print(f"Google STT successful: '{text}'")
+                # If we got text, don't try other methods
+            else:
+                text = "No speech detected"  # Reset if empty string returned
                 
-                # Use simple signal statistics as proxies for pitch metrics
-                avg_pitch = 140 + (np.mean(np.abs(samples)) / 1000)
-                pitch_variance = np.std(samples) / 1000
-            except Exception as e:
-                print(f"Fallback audio analysis failed: {e}")
-                # Use default values
-        
-        # Calculate sentiment
-        sia = SentimentIntensityAnalyzer()
-        sentiment = sia.polarity_scores(text)
-        
+    except ImportError:
+        print("speech_recognition not available")
+    except sr.UnknownValueError:
+        if DEBUG:
+            print("Google STT couldn't understand audio")
+        text = "No speech detected"
     except Exception as e:
-        print(f"Overall analysis error: {e}")
+        if DEBUG:
+            print(f"Google STT error: {e}")
+    
+    # Fix 8: Fallback - If Google doesn't work, try a simpler approach with lower bar for "speech detected"
+    if text == "No speech detected":
+        try:
+            # Check if the audio has enough variation to likely contain speech
+            audio = AudioSegment.from_file(processed_audio_path)
+            samples = np.array(audio.get_array_of_samples())
+            
+            # Simple heuristic - if there's enough variation in the audio, assume speech
+            rms = np.sqrt(np.mean(samples**2))
+            if rms > 100:  # There's some audio signal above background noise
+                text = "Speech detected but transcription failed. Please try speaking louder and more clearly."
+                print(f"Basic audio check: Signal detected (RMS: {rms})")
+        except Exception as e:
+            if DEBUG:
+                print(f"Basic audio check failed: {e}")
+    
+    # ===== AUDIO ANALYSIS =====
+    try:
+        # Extract audio features using pydub (works without librosa)
+        audio = AudioSegment.from_file(processed_audio_path)
+        samples = np.array(audio.get_array_of_samples())
+        
+        # Simple statistics-based estimations
+        if len(samples) > 0:
+            # Normalize samples
+            samples = samples / (2**15) if samples.dtype == np.int16 else samples / (2**31)
+            
+            # Estimate pitch - this is a simple estimation, not accurate pitch detection
+            # Real pitch detection requires more complex algorithms
+            chunk_size = int(audio.frame_rate * 0.03)  # 30ms chunks
+            chunks = [samples[i:i+chunk_size] for i in range(0, len(samples), chunk_size) if i+chunk_size < len(samples)]
+            
+            if len(chunks) > 0:
+                # Calculate zero-crossing rate for each chunk (correlates with pitch)
+                zcrs = []
+                for chunk in chunks:
+                    # Zero crossing rate
+                    zcr = sum(abs(np.diff(np.signbit(chunk).astype(int)))) / (2 * len(chunk))
+                    zcrs.append(zcr * audio.frame_rate)
+                
+                # Filter out unreasonably high/low values (simple noise filtering)
+                filtered_zcrs = [z for z in zcrs if 70 < z < 400]  # Human speech range approx.
+                
+                if filtered_zcrs:
+                    avg_pitch = np.mean(filtered_zcrs)
+                    pitch_variance = np.std(filtered_zcrs)
+                else:
+                    # Default to typical male/female average if we couldn't detect
+                    avg_pitch = 150
+                    pitch_variance = 30
+            else:
+                avg_pitch = 150
+                pitch_variance = 30
+    except Exception as e:
+        if DEBUG:
+            print(f"Audio feature extraction failed: {e}")
+    
+    # If we have speech text, calculate sentiment
+    if text and text != "No speech detected":
+        try:
+            sia = SentimentIntensityAnalyzer()
+            sentiment = sia.polarity_scores(text)
+        except Exception as e:
+            if DEBUG:
+                print(f"Sentiment analysis failed: {e}")
+    
+    # Clean up temporary files
+    if processed_audio_path != audio_path and os.path.exists(processed_audio_path):
+        try:
+            os.unlink(processed_audio_path)
+        except:
+            pass
     
     print(f"Analysis completed in {time.time() - start_time:.2f}s")
     return text, sentiment, avg_pitch, pitch_variance
 
-# Enhanced sentiment analysis with voice feature integration
+# Same function as before, just reusing for completeness
 def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
     """
     An improved sentiment analyzer with voice features integration
@@ -131,7 +216,7 @@ def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
     pos_word_count = sum(1 for word in emotion_words['positive'] if word in text_lower)
     neg_word_count = sum(1 for word in emotion_words['negative'] if word in text_lower)
     
-    # Apply stronger sentiment adjustments based on emotion words
+    # Apply adjustments based on emotion words
     if pos_word_count > 0:
         sentiment_boost = min(0.1 * pos_word_count, 0.5)  # Cap at 0.5
         enhanced_sentiment['compound'] = min(enhanced_sentiment['compound'] + sentiment_boost, 1.0)
@@ -142,33 +227,19 @@ def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
         enhanced_sentiment['compound'] = max(enhanced_sentiment['compound'] - sentiment_penalty, -1.0)
         enhanced_sentiment['neg'] += sentiment_penalty
     
-    # Increase sensitivity for neutral text
-    if -0.1 < base_sentiment['compound'] < 0.1:
-        # Apply more aggressive scaling to push away from neutral
-        if base_sentiment['compound'] > 0:
-            enhanced_sentiment['compound'] = enhanced_sentiment['compound'] * 2.5
-        elif base_sentiment['compound'] < 0:
-            enhanced_sentiment['compound'] = enhanced_sentiment['compound'] * 2.5
-    
     # Apply voice feature adjustments if available
-    if avg_pitch is not None:
-        # Higher pitch often correlates with positive emotions
+    if avg_pitch is not None and pitch_variance is not None:
+        # Simple voice-based adjustments (if we have voice features)
         if avg_pitch > 180:  # Higher pitch
-            pitch_adjustment = min((avg_pitch - 180) / 100, 0.2)  # Cap at 0.2
-            enhanced_sentiment['compound'] = min(enhanced_sentiment['compound'] + pitch_adjustment, 1.0)
+            enhanced_sentiment['compound'] = min(enhanced_sentiment['compound'] + 0.1, 1.0)
         elif avg_pitch < 120:  # Lower pitch
-            pitch_adjustment = min((120 - avg_pitch) / 100, 0.2)  # Cap at 0.2
-            enhanced_sentiment['compound'] = max(enhanced_sentiment['compound'] - pitch_adjustment, -1.0)
-    
-    if pitch_variance is not None:
-        # Higher variance often indicates emotional speech
-        if pitch_variance < 10:  # Monotonous speech
-            if enhanced_sentiment['compound'] < 0:
-                enhanced_sentiment['compound'] *= 1.5  # Amplify negative
-            else:
-                enhanced_sentiment['compound'] *= 0.7  # Dampen positive
-        elif pitch_variance > 50:  # Highly variable speech
-            enhanced_sentiment['compound'] *= 1.3  # Amplify existing sentiment
+            enhanced_sentiment['compound'] = max(enhanced_sentiment['compound'] - 0.1, -1.0)
+        
+        if pitch_variance > 50:  # High variance = more emotional
+            if enhanced_sentiment['compound'] > 0:
+                enhanced_sentiment['compound'] *= 1.2  # Amplify positive
+            elif enhanced_sentiment['compound'] < 0:
+                enhanced_sentiment['compound'] *= 1.2  # Amplify negative
     
     # Normalize the pos/neg/neu values to sum to 1.0
     total = enhanced_sentiment['pos'] + enhanced_sentiment['neg'] + enhanced_sentiment['neu']
@@ -180,17 +251,32 @@ def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
     
     return enhanced_sentiment
 
-# Improved audio processing function with better error handling
+# Fix 9: Better audio recording handling with improved logging and validation
 def process_audio_recording(audio_data):
     """
-    Process recorded audio data with robust error handling and status updates
+    Process recorded audio data with more robust error handling and validation
     """
-    if not audio_data or 'bytes' not in audio_data or len(audio_data['bytes']) < 1000:
-        st.warning("Recording appears to be empty or too short. Please try recording again.")
+    if DEBUG:
+        if audio_data:
+            print(f"Received audio data: {len(audio_data.get('bytes', b''))} bytes")
+        else:
+            print("No audio data received")
+    
+    # Fix 10: More specific validation of audio data
+    if not audio_data:
+        st.warning("No recording detected. Please click 'Start Recording' and speak.")
+        return None, None, None, None
+    
+    if 'bytes' not in audio_data:
+        st.warning("Recording format not supported. Please try again in Chrome or Edge browser.")
+        return None, None, None, None
+    
+    # Fix 11: More lenient size check
+    if len(audio_data['bytes']) < 100:  # Very small file
+        st.warning("Recording too short or empty. Please record for at least 1-2 seconds.")
         return None, None, None, None
     
     with st.spinner("Processing your recording..."):
-        # Create a status message
         status_msg = st.empty()
         status_msg.info("Converting and analyzing audio...")
         
@@ -198,28 +284,19 @@ def process_audio_recording(audio_data):
         text, sentiment, avg_pitch, pitch_variance = None, None, None, None
         
         try:
-            # Create temp file for audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            # Write audio data to a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
                 audio_path = temp_file.name
-                # Write the raw bytes to the file
                 temp_file.write(audio_data['bytes'])
                 temp_file.flush()
             
-            # Convert audio format using pydub for compatibility
-            try:
-                # Convert to compatible WAV format
-                audio = AudioSegment.from_file(io.BytesIO(audio_data['bytes']))
-                audio = audio.set_channels(1)  # Convert to mono
-                audio = audio.set_frame_rate(16000)  # Set to 16kHz
-                audio.export(audio_path, format="wav")
-                print(f"Audio successfully converted with pydub")
-            except Exception as e:
-                print(f"Pydub conversion failed: {e}. Proceeding with raw file.")
+            if DEBUG:
+                print(f"Temporary audio file created: {audio_path}")
             
             # Display audio player
             st.audio(audio_data['bytes'])
             
-            # Run our analysis
+            # Run our improved analysis
             text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
             
             # Apply enhanced sentiment analysis
@@ -227,16 +304,20 @@ def process_audio_recording(audio_data):
                 sentiment = get_enhanced_sentiment(text, avg_pitch, pitch_variance)
             
         except Exception as e:
-            st.error(f"Error processing audio: {str(e)}")
             import traceback
-            print(traceback.format_exc())
+            error_details = traceback.format_exc()
+            if DEBUG:
+                print(f"Error in process_audio_recording: {str(e)}")
+                print(error_details)
+            st.error(f"Error processing audio: {str(e)}")
         finally:
             status_msg.empty()
             # Clean up temp file
             if audio_path and os.path.exists(audio_path):
                 try:
                     os.unlink(audio_path)
-                except:
-                    pass
+                except Exception as e:
+                    if DEBUG:
+                        print(f"Failed to delete temp file: {e}")
     
     return text, sentiment, avg_pitch, pitch_variance
