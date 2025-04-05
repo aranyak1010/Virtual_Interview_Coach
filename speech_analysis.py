@@ -82,52 +82,81 @@ def analyze_speech(audio_path):
         recognizer = sr.Recognizer()
         
         # Fix 4: Configure recognizer for better results
-        recognizer.energy_threshold = 300  # Lower energy threshold (more sensitive)
+        recognizer.energy_threshold = 200  # Lower energy threshold (even more sensitive)
         recognizer.dynamic_energy_threshold = True
-        recognizer.pause_threshold = 0.8  # Be more tolerant of pauses
+        recognizer.pause_threshold = 1.0  # Be more tolerant of pauses
+        recognizer.operation_timeout = 5  # Add operation timeout
         
         with sr.AudioFile(processed_audio_path) as source:
-            # Fix 5: Adjust for ambient noise
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            # Fix 5: Adjust for ambient noise for a shorter duration
+            recognizer.adjust_for_ambient_noise(source, duration=0.2)
             
             # Fix 6: Record with longer timeout
             audio_data = recognizer.record(source)
             
-            # Fix 7: Use Google with more specific parameters
-            text = recognizer.recognize_google(
-                audio_data,
-                language="en-US",  # Explicitly specify language
-                show_all=False     # Return only the most likely result
-            )
-            
-            if text and text.strip():
-                print(f"Google STT successful: '{text}'")
-                # If we got text, don't try other methods
-            else:
-                text = "No speech detected"  # Reset if empty string returned
+            # Fix 7: Attempt recognition with multiple services
+            # First try Google
+            try:
+                text = recognizer.recognize_google(
+                    audio_data,
+                    language="en-US",  # Explicitly specify language
+                    show_all=False     # Return only the most likely result
+                )
                 
-    except ImportError:
-        print("speech_recognition not available")
+                if text and text.strip():
+                    print(f"Google STT successful: '{text}'")
+                else:
+                    text = "No speech detected"  # Reset if empty string returned
+            except Exception as e:
+                print(f"Google STT failed: {e}")
+                # If Google fails, try Sphinx as fallback
+                try:
+                    # Only attempt if sphinx is installed
+                    text = recognizer.recognize_sphinx(audio_data)
+                    if text and text.strip():
+                        print(f"Sphinx STT successful: '{text}'")
+                    else:
+                        text = "No speech detected"
+                except (ImportError, sr.UnknownValueError) as e:
+                    print(f"Sphinx STT failed: {e}")
+                    text = "No speech detected"
+                
+    except ImportError as ie:
+        print(f"speech_recognition import error: {ie}")
+        # Ensure SpeechRecognition is installed
+        try:
+            import pip
+            pip.main(['install', 'SpeechRecognition'])
+            print("Installed SpeechRecognition package")
+        except:
+            print("Failed to install SpeechRecognition")
     except sr.UnknownValueError:
         if DEBUG:
-            print("Google STT couldn't understand audio")
-        text = "No speech detected"
+            print("STT couldn't understand audio")
     except Exception as e:
         if DEBUG:
-            print(f"Google STT error: {e}")
+            print(f"STT error: {e}")
     
-    # Fix 8: Fallback - If Google doesn't work, try a simpler approach with lower bar for "speech detected"
+    # Fix 8: Fallback - If transcription services don't work, try a simpler approach
     if text == "No speech detected":
         try:
             # Check if the audio has enough variation to likely contain speech
             audio = AudioSegment.from_file(processed_audio_path)
             samples = np.array(audio.get_array_of_samples())
             
-            # Simple heuristic - if there's enough variation in the audio, assume speech
+            # Enhanced heuristic - check for likely speech patterns
             rms = np.sqrt(np.mean(samples**2))
-            if rms > 100:  # There's some audio signal above background noise
-                text = "Speech detected but transcription failed. Please try speaking louder and more clearly."
-                print(f"Basic audio check: Signal detected (RMS: {rms})")
+            
+            # Check for audio energy and variation
+            if rms > 50:  # Lower threshold to detect quieter speech
+                # Check for variations in audio that suggest speech
+                chunks = np.array_split(samples, min(10, len(samples)))
+                chunk_means = [np.mean(abs(chunk)) for chunk in chunks if len(chunk) > 0]
+                
+                # If there's enough variation between quiet and loud parts
+                if len(chunk_means) > 1 and max(chunk_means) / (min(chunk_means) + 0.01) > 2:
+                    text = "Speech detected but transcription failed. Please try speaking louder and more clearly."
+                    print(f"Basic audio check: Speech pattern detected (RMS: {rms})")
         except Exception as e:
             if DEBUG:
                 print(f"Basic audio check failed: {e}")
@@ -251,28 +280,39 @@ def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
     
     return enhanced_sentiment
 
-# Fix 9: Better audio recording handling with improved logging and validation
+# Fix 9: Completely rewritten audio recording handler with robust error handling
 def process_audio_recording(audio_data):
     """
-    Process recorded audio data with more robust error handling and validation
+    Process recorded audio data with comprehensive error handling and validation
     """
     if DEBUG:
         if audio_data:
-            print(f"Received audio data: {len(audio_data.get('bytes', b''))} bytes")
+            print(f"Received audio data: {type(audio_data)} with keys: {audio_data.keys() if isinstance(audio_data, dict) else 'Not a dict'}")
+            print(f"Audio data size: {len(audio_data.get('bytes', b'')) if isinstance(audio_data, dict) and 'bytes' in audio_data else 'Unknown'} bytes")
         else:
             print("No audio data received")
     
-    # Fix 10: More specific validation of audio data
+    # Fix 10: More detailed validation of audio data
     if not audio_data:
         st.warning("No recording detected. Please click 'Start Recording' and speak.")
         return None, None, None, None
     
-    if 'bytes' not in audio_data:
-        st.warning("Recording format not supported. Please try again in Chrome or Edge browser.")
+    # Handle both possible formats from streamlit-mic-recorder
+    audio_bytes = None
+    if isinstance(audio_data, dict):
+        if 'bytes' in audio_data:
+            audio_bytes = audio_data['bytes']
+        elif 'raw' in audio_data:
+            audio_bytes = audio_data['raw']
+    elif isinstance(audio_data, bytes):
+        audio_bytes = audio_data
+    
+    if not audio_bytes:
+        st.warning("Recording format not recognized. Please try again in Chrome or Edge browser.")
         return None, None, None, None
     
-    # Fix 11: More lenient size check
-    if len(audio_data['bytes']) < 100:  # Very small file
+    # Fix 11: More lenient size check but still ensure we have data
+    if len(audio_bytes) < 50:  # Very small file
         st.warning("Recording too short or empty. Please record for at least 1-2 seconds.")
         return None, None, None, None
     
@@ -284,24 +324,53 @@ def process_audio_recording(audio_data):
         text, sentiment, avg_pitch, pitch_variance = None, None, None, None
         
         try:
-            # Write audio data to a temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
+            # Write audio data to a temporary file with the correct extension
+            # Try to determine format from audio_data if available
+            suffix = ".webm"  # Default format
+            if isinstance(audio_data, dict) and 'format' in audio_data:
+                suffix = f".{audio_data['format']}"
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 audio_path = temp_file.name
-                temp_file.write(audio_data['bytes'])
+                temp_file.write(audio_bytes)
                 temp_file.flush()
             
             if DEBUG:
-                print(f"Temporary audio file created: {audio_path}")
+                print(f"Temporary audio file created: {audio_path} with size {os.path.getsize(audio_path)} bytes")
             
-            # Display audio player
-            st.audio(audio_data['bytes'])
+            # Verify the file exists and has content
+            if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 50:
+                if DEBUG:
+                    print(f"File either doesn't exist or is too small: {os.path.exists(audio_path)}, Size: {os.path.getsize(audio_path) if os.path.exists(audio_path) else 'N/A'}")
+                st.warning("Something went wrong with the recording. Please try again.")
+                return None, None, None, None
+            
+            # Display audio player with error handling
+            try:
+                st.audio(audio_bytes)
+            except Exception as audio_error:
+                if DEBUG:
+                    print(f"Error displaying audio: {audio_error}")
+                # Continue anyway - this isn't critical
             
             # Run our improved analysis
-            text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
-            
-            # Apply enhanced sentiment analysis
-            if text and text != "No speech detected":
-                sentiment = get_enhanced_sentiment(text, avg_pitch, pitch_variance)
+            try:
+                text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
+                
+                # Apply enhanced sentiment analysis
+                if text and text != "No speech detected":
+                    sentiment = get_enhanced_sentiment(text, avg_pitch, pitch_variance)
+                    
+                    # Extra validation on sentiment output
+                    if not isinstance(sentiment, dict) or 'compound' not in sentiment:
+                        sentiment = {"compound": 0.0, "pos": 0.0, "neg": 0.0, "neu": 1.0}
+                        if DEBUG:
+                            print("Sentiment analysis returned invalid format, using default")
+            except Exception as analysis_error:
+                if DEBUG:
+                    print(f"Error in speech analysis: {analysis_error}")
+                text = "Error analyzing speech. Please try again."
+                sentiment = {"compound": 0.0, "pos": 0.0, "neg": 0.0, "neu": 1.0}
             
         except Exception as e:
             import traceback
@@ -310,6 +379,13 @@ def process_audio_recording(audio_data):
                 print(f"Error in process_audio_recording: {str(e)}")
                 print(error_details)
             st.error(f"Error processing audio: {str(e)}")
+            
+            # Still return something valid to prevent UI errors
+            text = "Error processing audio"
+            sentiment = {"compound": 0.0, "pos": 0.0, "neg": 0.0, "neu": 1.0}
+            avg_pitch = 150
+            pitch_variance = 30
+            
         finally:
             status_msg.empty()
             # Clean up temp file
