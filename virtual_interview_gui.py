@@ -20,7 +20,7 @@ from scipy.io.wavfile import write
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
 from pydub import AudioSegment
-from speech_analysis import analyze_speech_simplified, process_audio_recording
+from speech_analysis import analyze_speech_simplified, process_audio_recording, get_enhanced_sentiment
 import pyaudio
 import tempfile
 import time
@@ -317,94 +317,7 @@ def process_audio_chunks():
     except Exception as e:
         st.error(f"Error processing audio: {e}")
         return None
-
-def speech_analysis_ui():
-    st.header("🎙️ Speech Analysis")
-    init_recording_state()
-
-    # Browser-based audio recording
-    audio_data = mic_recorder(
-        start_prompt="⏺️ Start Recording",
-        stop_prompt="⏹️ Stop Recording",
-        format="webm"
-    )
-
-    if audio_data and 'bytes' in audio_data and 'sample_rate' in audio_data:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tf:
-            write(tf.name, audio_data['sample_rate'], np.frombuffer(audio_data['bytes'], dtype=np.int16))
-            st.session_state.temp_audio_path = tf.name
-
-        st.audio(audio_data['bytes'], format="audio/webm")
-        analyze_audio()
-
-def analyze_audio():
-    if st.session_state.temp_audio_path:
-        try:
-            text, sentiment, avg_pitch, pitch_variance = analyze_speech_simplified(st.session_state.temp_audio_path)
-            
-            if text and text != "No speech recognized":
-                st.subheader("📊 Analysis Results")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("**📝 Recognized Text:**")
-                    st.info(text)
-                    st.write(f"**😊 Sentiment Score:** {sentiment['compound']:.2f}")
-                with col2:
-                    st.write("**🎵 Voice Analysis**")
-                    st.write(f"• Average Pitch: {avg_pitch:.2f} Hz")
-                    st.write(f"• Pitch Variance: {pitch_variance:.2f}")
-                
-                pitch_status = "✅ Good Variation" if pitch_variance > 20 else "⚠️ Monotonous"
-                sentiment_status = "😊 Positive" if sentiment['compound'] > 0.05 else "😐 Neutral" if sentiment['compound'] > -0.05 else "😟 Negative"
-                
-                st.metric("Sentiment", sentiment_status)
-                st.metric("Pitch Variation", pitch_status)
-            else:
-                st.warning("No speech detected. Please try again.")
-        except Exception as e:
-            st.error(f"Analysis error: {str(e)}")
-
-
-
-def get_enhanced_sentiment(text, avg_pitch=None, pitch_variance=None):
-    sia = SentimentIntensityAnalyzer()
-    base_sentiment = sia.polarity_scores(text)
-    sensitivity = 1.5
-    enhanced_sentiment = base_sentiment.copy()
-    enhanced_sentiment["compound"] = max(min(base_sentiment["compound"] * sensitivity, 1.0), -1.0)
     
-    total = base_sentiment["pos"] + base_sentiment["neg"] + base_sentiment["neu"]
-    if base_sentiment["compound"] > 0:
-        enhanced_sentiment["pos"] = min(base_sentiment["pos"] * sensitivity, total)
-        enhanced_sentiment["neu"] = max(total - enhanced_sentiment["pos"] - enhanced_sentiment["neg"], 0)
-    elif base_sentiment["compound"] < 0:
-        enhanced_sentiment["neg"] = min(base_sentiment["neg"] * sensitivity, total)
-        enhanced_sentiment["neu"] = max(total - enhanced_sentiment["pos"] - enhanced_sentiment["neg"], 0)
-    
-    if avg_pitch is not None and avg_pitch < 120:
-        pitch_adjustment = -0.15
-        enhanced_sentiment["compound"] = max(min(enhanced_sentiment["compound"] + pitch_adjustment, 1.0), -1.0)
-        if -0.2 < enhanced_sentiment["compound"] < 0.2:
-            enhanced_sentiment["neu"] = min(enhanced_sentiment["neu"] + 0.2, 1.0)
-            total_adjusted = enhanced_sentiment["pos"] + enhanced_sentiment["neg"] + enhanced_sentiment["neu"]
-            scale_factor = 1.0 / total_adjusted if total_adjusted > 0 else 1.0
-            enhanced_sentiment["pos"] *= scale_factor
-            enhanced_sentiment["neg"] *= scale_factor
-            enhanced_sentiment["neu"] *= scale_factor
-    
-    if pitch_variance is not None and pitch_variance < 10:
-        neutrality_boost = 0.25
-        enhanced_sentiment["compound"] *= (1 - neutrality_boost)
-        enhanced_sentiment["neu"] = min(enhanced_sentiment["neu"] + neutrality_boost, 1.0)
-        total_adjusted = enhanced_sentiment["pos"] + enhanced_sentiment["neg"] + enhanced_sentiment["neu"]
-        if total_adjusted > 0:
-            scale_factor = 1.0 / total_adjusted
-            enhanced_sentiment["pos"] *= scale_factor
-            enhanced_sentiment["neg"] *= scale_factor
-            enhanced_sentiment["neu"] *= scale_factor
-    
-    return enhanced_sentiment
-
 # Streamlit UI
 def main():
     st.title("JobGPT - Your Personal AI-Powered Virtual Interview Coach")
@@ -433,73 +346,148 @@ def main():
     
     # 🎙️ Speech Analysis Section
     st.header("🎙️ Speech Analysis")
-
+    
     col1, col2 = st.columns([3, 3])
-
+    
     with col1:
         st.markdown("### Microphone Check")
-
-        # Use the streamlit-mic-recorder with minimal settings
+        
+        # Use the streamlit-mic-recorder with improved settings
         audio_data = mic_recorder(
             key="speech-recorder",
             start_prompt="🎙️ Start Recording",
             stop_prompt="⏹️ Stop Recording",
-            format="webm",  # Use webm format which is more reliable
-            use_container_width=True
+            format="webm",
+            use_container_width=True,
+            text="Speak clearly for best results"  # Added guidance
         )
-
-        # If we have audio data, process it with our simplified pipeline
+        
+        # Add instructions for best results
+        with st.expander("Tips for better recognition"):
+            st.markdown("""
+            - Speak clearly and at a normal pace
+            - Reduce background noise
+            - Keep your microphone close
+            - Try recording for at least 3-5 seconds
+            """)
+            
+        # If we have audio data, process it with our improved pipeline
         if audio_data:
             text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
             
-            if text and text != "No speech detected":
+            if text and text != "No speech detected" and text != "No speech recognized":
                 st.write("**📝 Transcription:**", text)
                 
+                # More nuanced sentiment display
                 sentiment_score = sentiment["compound"]
-                if sentiment_score > 0.1:
-                    sentiment_label, sentiment_color = "Positive 😊", "green"
+                if sentiment_score > 0.5:
+                    sentiment_label, sentiment_color = "Very Positive 😄", "green"
+                elif sentiment_score > 0.1:
+                    sentiment_label, sentiment_color = "Positive 😊", "lightgreen"
+                elif sentiment_score < -0.5:
+                    sentiment_label, sentiment_color = "Very Negative 😞", "red"
                 elif sentiment_score < -0.1:
-                    sentiment_label, sentiment_color = "Negative 😔", "red"
+                    sentiment_label, sentiment_color = "Negative 😔", "lightcoral"
                 else:
                     sentiment_label, sentiment_color = "Neutral 😐", "gray"
                 
                 st.markdown(
                     f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
                     unsafe_allow_html=True)
-                st.markdown(
-                    f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
                 
+                # Improved visualization
+                st.markdown(f"**Sentiment Breakdown:**")
+                cols = st.columns(3)
+                cols[0].metric("Positive", f"{sentiment['pos']:.2f}")
+                cols[1].metric("Negative", f"{sentiment['neg']:.2f}")
+                cols[2].metric("Neutral", f"{sentiment['neu']:.2f}")
+                
+                # Add a progress bar to visually show the sentiment scale from -1 to 1
                 sentiment_meter = st.progress(0)
-                normalized_sentiment = (sentiment_score + 1) / 2
+                normalized_sentiment = (sentiment_score + 1) / 2  # Convert -1...1 to 0...1
                 sentiment_meter.progress(normalized_sentiment)
                 
+                st.markdown("---")
+                st.markdown("### Voice Characteristics")
+                
+                # Add more detailed pitch analysis
                 pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
                 st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
                 
-                variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
-                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
-            elif text == "No speech detected":
-                st.warning("No speech was detected in your recording. Please try again and speak clearly.")
-
-    with col2:
-        st.info("**Tips for better speech recording:**\n\n"
-                "• Click **Start Recording** to begin\n\n"
-                "• Speak clearly and confidently\n\n"
-                "• Click **Stop Recording** to finish\n\n"
-                "• The recording will be automatically analyzed\n\n"
-                "• Keep background noise to a minimum for best results.")
+                # More detailed voice variation analysis
+                if pitch_variance < 10:
+                    variation_category = "Monotonous (limited expression)"
+                elif pitch_variance < 30:
+                    variation_category = "Moderate variation"
+                else:
+                    variation_category = "Expressive (good variation)"
                 
-        # Add troubleshooting tips
-        with st.expander("Troubleshooting Audio Issues"):
-            st.markdown("""
-            **If your recording isn't being processed:**
+                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
+                
+            elif text == "No speech detected" or text == "No speech recognized":
+                st.warning("No speech was detected in your recording. Please try again and speak clearly.")
+            else:
+                st.error("Speech recognition failed. Please check your microphone and try again.")
+    
+    with col2:
+        if 'text' in locals() and text and text != "No speech detected" and text != "No speech recognized":
+            st.markdown("### Speech Analysis")
             
-            1. **Try a shorter recording** - Just 5-10 seconds is enough
-            2. **Make sure your microphone is working** - Test it in another app
-            3. **Check browser permissions** - Make sure your browser has microphone access
-            4. **Speak louder** - The app needs to detect speech to process it
-            5. **Try a different browser** - Chrome works best with audio recording
-            6. **Restart the app** - Sometimes a fresh start helps
+            # Provide helpful feedback based on the analysis
+            st.markdown("#### Feedback:")
+            
+            feedback_points = []
+            
+            # Sentiment feedback
+            if sentiment_score > 0.3:
+                feedback_points.append("✅ Your tone is positive and engaging")
+            elif sentiment_score < -0.3:
+                feedback_points.append("⚠️ Your tone comes across as negative, which might affect how your message is received")
+            else:
+                feedback_points.append("ℹ️ Your tone is mostly neutral")
+            
+            # Pitch feedback
+            if avg_pitch > 200:
+                feedback_points.append("⚠️ Your pitch is quite high, which might sound tense to listeners")
+            elif avg_pitch < 100:
+                feedback_points.append("⚠️ Your pitch is very low, which might be difficult to hear clearly")
+            else:
+                feedback_points.append("✅ Your pitch is in a good range for clear communication")
+            
+            # Variation feedback
+            if pitch_variance < 15:
+                feedback_points.append("⚠️ Your speech lacks variation, which might sound monotonous to listeners")
+            elif pitch_variance > 50:
+                feedback_points.append("✅ Your speech has excellent variation, making it engaging to listen to")
+            else:
+                feedback_points.append("✅ Your speech has good variation in tone")
+            
+            # Display feedback
+            for point in feedback_points:
+                st.markdown(point)
+            
+            # Add tips based on the analysis
+            st.markdown("#### Tips for improvement:")
+            
+            if pitch_variance < 15:
+                st.markdown("- Try emphasizing important words by varying your pitch")
+                st.markdown("- Practice reading aloud with intentional expression")
+            
+            if sentiment_score < -0.1 and 'negative' in sentiment_label.lower():
+                st.markdown("- Consider using more positive language if appropriate for your context")
+                st.markdown("- Be aware of how your tone might be perceived by others")
+        else:
+            st.markdown("### Recording Instructions")
+            st.markdown("""
+            1. Click "Start Recording" and allow microphone access
+            2. Speak clearly into your microphone
+            3. Click "Stop Recording" when finished
+            4. Wait for analysis to complete
+            
+            Your speech will be analyzed for:
+            - Text content through speech recognition
+            - Emotional tone (sentiment analysis)
+            - Voice characteristics (pitch and variation)
             """)
 
 
