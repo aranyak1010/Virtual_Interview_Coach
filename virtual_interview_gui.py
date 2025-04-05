@@ -392,96 +392,105 @@ def main():
     analyze_face()
     
     # Speech analysis section
-    st.header("🎙️ Speech Analysis")
+    st.title("🎙️ Speech Analysis Tool")
+    st.write("Record your speech to analyze tone, sentiment, and vocal characteristics.")
     
-    col1, col2 = st.columns([3, 3])
+    # Initialize session state if needed
+    if 'audio_processed' not in st.session_state:
+        st.session_state.audio_processed = False
+    
+    # Create two columns for layout
+    col1, col2 = st.columns([3, 2])
     
     with col1:
-        st.markdown("### Microphone Check")
-        
-        # Use the streamlit-mic-recorder with minimal settings
+        st.subheader("Record Your Speech")
+        # Use streamlit-mic-recorder with improved settings
         audio_data = mic_recorder(
-            key="speech-recorder",
+            key="speech_recorder",
             start_prompt="🎙️ Start Recording",
             stop_prompt="⏹️ Stop Recording",
-            format="webm",  # Use webm format which is more reliable
+            format="webm",  # Using webm for better compatibility
             use_container_width=True
         )
         
-        # If we have audio data, process it with our simplified pipeline
-        if audio_data:
-            text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
-            
-            if text and text != "No speech detected":
-                st.write("**📝 Transcription:**", text)
-                
-                sentiment_score = sentiment["compound"]
-                if sentiment_score > 0.1:
-                    sentiment_label, sentiment_color = "Positive 😊", "green"
-                elif sentiment_score < -0.1:
-                    sentiment_label, sentiment_color = "Negative 😔", "red"
-                else:
-                    sentiment_label, sentiment_color = "Neutral 😐", "gray"
-                
-                st.markdown(
-                    f"**📈 Sentiment:** {sentiment_label} (Score: {sentiment_score:.2f})",
-                    unsafe_allow_html=True)
-                st.markdown(
-                    f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
-                
-                sentiment_meter = st.progress(0)
-                normalized_sentiment = (sentiment_score + 1) / 2
-                sentiment_meter.progress(normalized_sentiment)
-                
-                pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
-                st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
-                
-                variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
-                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
-            elif text == "No speech detected":
-                st.warning("No speech was detected in your recording. Please try again and speak clearly.")
+        # If audio data exists, process it
+        if audio_data and 'bytes' in audio_data and len(audio_data['bytes']) > 1000:
+            # Show a processing message
+            with st.spinner("Processing your recording..."):
+                # Process the audio recording
+                text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
+                st.session_state.audio_processed = True
+                st.session_state.text = text if text else "Processing completed, but no clear speech was detected. Please try again."
+                st.session_state.sentiment = sentiment
+                st.session_state.avg_pitch = avg_pitch
+                st.session_state.pitch_variance = pitch_variance
     
     with col2:
-        st.info("**Tips for better speech recording:**\n\n"
-                "• Click **Start Recording** to begin\n\n"
-                "• Speak clearly and confidently\n\n"
-                "• Click **Stop Recording** to finish\n\n"
-                "• The recording will be automatically analyzed\n\n"
-                "• Keep background noise to a minimum for best results.")
-                
-        # Add troubleshooting tips
-        with st.expander("Troubleshooting Audio Issues"):
-            st.markdown("""
-            **If your recording isn't being processed:**
-                
-            1. **Try a shorter recording** - Just 5-10 seconds is enough
-            2. **Make sure your microphone is working** - Test it in another app
-            3. **Check browser permissions** - Make sure your browser has microphone access
-            4. **Speak louder** - The app needs to detect speech to process it
-            5. **Try a different browser** - Chrome works best with audio recording
-            6. **Restart the app** - Sometimes a fresh start helps
-            """)
+        st.subheader("Recording Tips")
+        st.info(
+            "**For best results:**\n"
+            "- Speak clearly at a normal pace\n"
+            "- Minimize background noise\n"
+            "- Keep recording under 30 seconds\n"
+            "- Wait for processing to complete"
+        )
+    
+    # Display results after processing
+    if st.session_state.audio_processed:
+        st.header("📊 Analysis Results")
+        
+        col_text, col_metrics = st.columns([3, 2])
+        
+        with col_text:
+            st.subheader("📝 Speech Transcript")
+            st.write(st.session_state.text)
+        
+        with col_metrics:
+            # Sentiment visualization
+            sentiment_score = st.session_state.sentiment['compound']
             
-        # Add quick tech check button
-        if st.button("🔍 Run Microphone Test"):
-            st.write("Testing your microphone...")
-            try:
-                import speech_recognition as sr
-                recognizer = sr.Recognizer()
+            # Determine sentiment category
+            if sentiment_score > 0.05:
+                sentiment_label = "Positive 😊"
+                sentiment_color = "green"
+            elif sentiment_score < -0.05:
+                sentiment_label = "Negative 😔"
+                sentiment_color = "red"
+            else:
+                sentiment_label = "Neutral 😐"
+                sentiment_color = "blue"
                 
-                st.success("✅ Speech recognition module loaded successfully")
-                
-                # Check for available microphones
-                mic_list = sr.Microphone.list_microphone_names()
-                st.write(f"Available Microphones: {len(mic_list)}")
-                if len(mic_list) > 0:
-                    st.write("First microphone detected:", mic_list[0])
-                    st.success("✅ Microphone detected")
-                else:
-                    st.error("❌ No microphones detected")
-            except Exception as e:
-                st.error(f"❌ Error testing microphone: {e}")
-                st.info("Try installing the SpeechRecognition package: pip install SpeechRecognition")
+            st.subheader("Sentiment Analysis")
+            st.markdown(f"<h3 style='color:{sentiment_color}'>{sentiment_label} ({sentiment_score:.2f})</h3>", 
+                      unsafe_allow_html=True)
+            
+            # Create a sentiment meter
+            normalized_sentiment = (sentiment_score + 1) / 2  # Convert from [-1,1] to [0,1]
+            st.progress(normalized_sentiment)
+            
+            # Display sentiment breakdown
+            st.write(f"Positive: {st.session_state.sentiment['pos']:.2f}")
+            st.write(f"Negative: {st.session_state.sentiment['neg']:.2f}")
+            st.write(f"Neutral: {st.session_state.sentiment['neu']:.2f}")
+        
+        # Voice characteristics
+        st.subheader("🎵 Voice Characteristics")
+        col_pitch, col_variance = st.columns(2)
+        
+        with col_pitch:
+            # Pitch analysis
+            pitch_category = "High" if st.session_state.avg_pitch > 180 else "Normal" if st.session_state.avg_pitch > 120 else "Low"
+            st.metric("Average Pitch", f"{st.session_state.avg_pitch:.1f} Hz", pitch_category)
+        
+        with col_variance:
+            # Pitch variance analysis
+            variation_label = "Expressive" if st.session_state.pitch_variance > 40 else "Normal" if st.session_state.pitch_variance > 15 else "Monotonous"
+            st.metric("Voice Variation", f"{st.session_state.pitch_variance:.1f}", variation_label)
+        
+        # Add an option to try again
+        if st.button("🔄 Record New Speech"):
+            st.session_state.audio_processed = False
+            st.experimental_rerun()
 
 
 if __name__ == "__main__":
