@@ -4,4 +4,3 @@ ffmpeg
 portaudio19-dev
 python-dev
 libgl1
-libmagic1
