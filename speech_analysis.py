@@ -1,36 +1,37 @@
 import speech_recognition as sr
-from textblob import TextBlob
 import numpy as np
 import librosa
-from nltk.sentiment import SentimentIntensityAnalyzer  # Ensure you import this
+from nltk.sentiment import SentimentIntensityAnalyzer
+import time
 
 def analyze_speech(audio_path):
     recognizer = sr.Recognizer()
     sentiment_analyzer = SentimentIntensityAnalyzer()
     
-    # Simple timing mechanism to track performance
-    import time
-    start_time = time.time()
-    
-    # Load the audio file - direct approach without extra processing
+    start_time = time.time()  # Start timing the entire function
+
     try:
         with sr.AudioFile(audio_path) as source:
-            # Minimal ambient noise adjustment
-            recognizer.adjust_for_ambient_noise(source, duration=0.1)
+            # Shorter ambient noise adjustment for faster processing
+            recognizer.adjust_for_ambient_noise(source, duration=0.2)
             audio_data = recognizer.record(source)
+
+            # Debugging output
+            print(f"Length of audio data: {len(audio_data.frame_data)}")
             
-            # Use only Google's service - fastest and most reliable
             try:
-                text = recognizer.recognize_google(audio_data)
-                print(f"Speech recognition completed in {time.time() - start_time:.2f}s")
+                # Faster speech recognition with timeout
+                text = recognizer.recognize_google(audio_data, timeout=10)
+                print("Speech recognized:", text)
             except sr.UnknownValueError:
                 text = "No speech recognized"
-                print(f"No speech recognized, elapsed time: {time.time() - start_time:.2f}s")
+                print("No speech recognized")
             except Exception as e:
                 text = "No speech recognized"
-                print(f"Recognition error: {str(e)}, elapsed time: {time.time() - start_time:.2f}s")
+                print(f"Recognition error: {str(e)}")
+
     except Exception as e:
-        print(f"Audio file processing error: {str(e)}, elapsed time: {time.time() - start_time:.2f}s")
+        print(f"Audio file processing error: {str(e)}")
         return "Error processing audio", {"compound": 0, "pos": 0, "neg": 0, "neu": 1}, 0, 0
 
     # Simple sentiment analysis
@@ -38,24 +39,30 @@ def analyze_speech(audio_path):
     sentiment = sentiment_analyzer.polarity_scores(text) if text and text != "No speech recognized" else {"compound": 0, "pos": 0, "neg": 0, "neu": 1}
     print(f"Sentiment analysis completed in {time.time() - sentiment_time:.2f}s")
     
-    # Simplified pitch analysis - reduce complexity
+    # Simplified pitch analysis with lower sample rate for faster processing
     pitch_time = time.time()
     try:
-        # Use a lower sample rate for faster processing
-        y, sample_rate = librosa.load(audio_path, sr=8000)
+        # Use a much lower sample rate for faster processing
+        y, sample_rate = librosa.load(audio_path, sr=8000, duration=10)  # Limit to 10 seconds for speed
         
-        if len(y) > 0:
-            # Use simpler pitch estimation - much faster
-            f0, voiced_flag, voiced_probs = librosa.pyin(
-                y, 
-                fmin=librosa.note_to_hz('C2'), 
-                fmax=librosa.note_to_hz('C7'),
+        if len(y) > 0 and np.mean(np.abs(y)) > 0.01:  # Check if audio has actual content
+            # Use simpler and faster pitch estimation
+            pitches, magnitudes = librosa.piptrack(
+                y=y, 
                 sr=sample_rate,
-                frame_length=1024
+                fmin=librosa.note_to_hz('C2'),
+                fmax=librosa.note_to_hz('C7'),
+                n_fft=1024,  # Smaller FFT window
+                hop_length=512  # Larger hop for speed
             )
             
-            # Filter out unvoiced segments
-            pitch_values = f0[voiced_flag]
+            # Get pitches with significant magnitude
+            pitch_values = []
+            for i in range(min(10, magnitudes.shape[1])):  # Limit columns for speed
+                index = magnitudes[:,i].argmax()
+                pitch = pitches[index,i]
+                if pitch > 0:
+                    pitch_values.append(pitch)
             
             if len(pitch_values) > 0:
                 avg_pitch = np.mean(pitch_values)
