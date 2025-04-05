@@ -20,7 +20,7 @@ from scipy.io.wavfile import write
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
 from pydub import AudioSegment
-from speech_analysis import analyze_speech
+from speech_analysis import analyze_speech_simplified, process_audio_recording
 import pyaudio
 import tempfile
 import time
@@ -340,7 +340,7 @@ def speech_analysis_ui():
 def analyze_audio():
     if st.session_state.temp_audio_path:
         try:
-            text, sentiment, avg_pitch, pitch_variance = analyze_speech(st.session_state.temp_audio_path)
+            text, sentiment, avg_pitch, pitch_variance = analyze_speech_simplified(st.session_state.temp_audio_path)
             
             if text and text != "No speech recognized":
                 st.subheader("📊 Analysis Results")
@@ -439,146 +439,47 @@ def main():
     with col1:
         st.markdown("### Microphone Check")
 
-        # Use the streamlit-mic-recorder
+        # Use the streamlit-mic-recorder with minimal settings
         audio_data = mic_recorder(
             key="speech-recorder",
             start_prompt="🎙️ Start Recording",
             stop_prompt="⏹️ Stop Recording",
-            format="webm",
+            format="webm",  # Use webm format which is more reliable
             use_container_width=True
         )
 
-        col_process = st.container()
-
-        if audio_data and 'bytes' in audio_data and len(audio_data['bytes']) > 100:  # Check for valid audio data
-            # Process recorded audio
-            with st.spinner("Processing your recording..."):
-                start_time = time.time()
+        # If we have audio data, process it with our simplified pipeline
+        if audio_data:
+            text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
+            
+            if text and text != "No speech detected":
+                st.write("**📝 Transcription:**", text)
                 
-                # Create a status message
-                status_msg = st.empty()
-                status_msg.info("Converting audio...")
-        
-                # Save audio to temp file with minimal processing
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-                    try:
-                        # Convert audio bytes to WAV format as efficiently as possible
-                        audio_bytes = audio_data['bytes']
-                        audio_path = temp_file.name
-                        
-                        # Write directly to file
-                        temp_file.write(audio_bytes)
-                        temp_file.flush()
-                        
-                        # Fix WAV header if needed
-                        try:
-                            from scipy.io import wavfile
-                            # Try to read the file to check if it's valid
-                            sr, _ = wavfile.read(audio_path)
-                            print(f"Valid WAV file detected with sample rate: {sr}")
-                        except Exception as wav_err:
-                            print(f"WAV header issue detected: {wav_err}, attempting simple conversion")
-                            status_msg.info("Converting audio format...")
-                            
-                            # Simple conversion - write minimal WAV header and raw PCM data
-                            with open(audio_path, 'wb') as wav_file:
-                                # Use a fixed sample rate for simplicity and speed
-                                sample_rate = 16000
-                                
-                                # Extract PCM data if possible, otherwise use as-is
-                                try:
-                                    from pydub import AudioSegment
-                                    audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
-                                    pcm_data = audio.raw_data
-                                except:
-                                    pcm_data = audio_bytes
-                                
-                                # Write simple WAV header
-                                wav_file.write(b'RIFF')
-                                wav_file.write((len(pcm_data) + 36).to_bytes(4, 'little'))
-                                wav_file.write(b'WAVE')
-                                wav_file.write(b'fmt ')
-                                wav_file.write((16).to_bytes(4, 'little'))
-                                wav_file.write((1).to_bytes(2, 'little'))  # PCM
-                                wav_file.write((1).to_bytes(2, 'little'))  # Mono
-                                wav_file.write(sample_rate.to_bytes(4, 'little'))
-                                wav_file.write((sample_rate * 2).to_bytes(4, 'little'))
-                                wav_file.write((2).to_bytes(2, 'little'))
-                                wav_file.write((16).to_bytes(2, 'little'))
-                                wav_file.write(b'data')
-                                wav_file.write(len(pcm_data).to_bytes(4, 'little'))
-                                wav_file.write(pcm_data)
-                        
-                        print(f"Audio file prepared in {time.time() - start_time:.2f}s")
-                        status_msg.info("Analyzing speech...")
-                        
-                        # Display audio player
-                        st.audio(audio_bytes)
-                        
-                        # Run streamlined analysis
-                        text, sentiment, avg_pitch, pitch_variance = analyze_speech(audio_path)
-                        
-                        # Clear status message
-                        status_msg.empty()
-                        
-                        if text and text != "No speech recognized":
-                            st.write("**📝 Transcription:**", text)
-                            
-                            sentiment_score = sentiment["compound"]
-                            if avg_pitch < 120 or pitch_variance < 10:
-                                if sentiment_score > 0.2:
-                                    sentiment_label, sentiment_color = "Positive 😊", "green"
-                                elif sentiment_score < -0.15:
-                                    sentiment_label, sentiment_color = "Negative 😔", "red"
-                                else:
-                                    sentiment_label, sentiment_color = "Neutral 😐", "gray"
-                            else:
-                                if sentiment_score > 0.1:
-                                    sentiment_label, sentiment_color = "Positive 😊", "green"
-                                elif sentiment_score < -0.1:
-                                    sentiment_label, sentiment_color = "Negative 😔", "red"
-                                else:
-                                    sentiment_label, sentiment_color = "Neutral 😐", "gray"
-                            
-                            st.markdown(
-                                f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
-                                unsafe_allow_html=True)
-                            st.markdown(
-                                f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
-                            
-                            sentiment_meter = st.progress(0)
-                            normalized_sentiment = (sentiment_score + 1) / 2
-                            sentiment_meter.progress(normalized_sentiment)
-                            
-                            if avg_pitch > 0:
-                                pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
-                                st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
-                            
-                            if pitch_variance > 0:
-                                variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
-                                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
-                        else:
-                            st.warning("No speech was recognized. This could be due to several reasons:")
-                            st.markdown("""
-                            - Background noise may be too high
-                            - The microphone might be too far away
-                            - The speech might be too quiet
-                            - The audio format may not be compatible
-                    
-                            Try speaking louder and closer to the microphone, or check your browser's microphone permissions.
-                            """)
-                    
-                    except Exception as e:
-                        st.error(f"Error processing audio: {str(e)}")
-                    
-                    finally:
-                        # Clean up temp file
-                        try:
-                            os.unlink(temp_file.name)
-                        except:
-                            pass
-        elif audio_data and 'bytes' in audio_data and len(audio_data['bytes']) <= 100:
-            st.warning("Recording appears to be empty or too short. Please try recording again.")
+                sentiment_score = sentiment["compound"]
+                if sentiment_score > 0.1:
+                    sentiment_label, sentiment_color = "Positive 😊", "green"
+                elif sentiment_score < -0.1:
+                    sentiment_label, sentiment_color = "Negative 😔", "red"
+                else:
+                    sentiment_label, sentiment_color = "Neutral 😐", "gray"
+                
+                st.markdown(
+                    f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
+                    unsafe_allow_html=True)
+                st.markdown(
+                    f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
+                
+                sentiment_meter = st.progress(0)
+                normalized_sentiment = (sentiment_score + 1) / 2
+                sentiment_meter.progress(normalized_sentiment)
+                
+                pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
+                st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
+                
+                variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
+                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
+            elif text == "No speech detected":
+                st.warning("No speech was detected in your recording. Please try again and speak clearly.")
 
     with col2:
         st.info("**Tips for better speech recording:**\n\n"
@@ -587,6 +488,19 @@ def main():
                 "• Click **Stop Recording** to finish\n\n"
                 "• The recording will be automatically analyzed\n\n"
                 "• Keep background noise to a minimum for best results.")
+                
+        # Add troubleshooting tips
+        with st.expander("Troubleshooting Audio Issues"):
+            st.markdown("""
+            **If your recording isn't being processed:**
+            
+            1. **Try a shorter recording** - Just 5-10 seconds is enough
+            2. **Make sure your microphone is working** - Test it in another app
+            3. **Check browser permissions** - Make sure your browser has microphone access
+            4. **Speak louder** - The app needs to detect speech to process it
+            5. **Try a different browser** - Chrome works best with audio recording
+            6. **Restart the app** - Sometimes a fresh start helps
+            """)
 
 
 if __name__ == "__main__":
