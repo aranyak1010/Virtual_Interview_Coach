@@ -394,7 +394,7 @@ def main():
     # Speech analysis section
     st.header("🎙️ Speech Analysis")
 
-    # Fix 12: Added debug info toggle
+    # Fix 12: Added debug info toggle with better default
     show_debug = st.sidebar.checkbox("Show Debug Info", value=False)
     
     col1, col2 = st.columns([3, 3])
@@ -402,69 +402,95 @@ def main():
     with col1:
         st.markdown("### Microphone Check")
 
-        # Fix 13: Updated recorder with more options
-        audio_data = mic_recorder(
-            key="speech-recorder",
-            start_prompt="🎙️ Start Recording",
-            stop_prompt="⏹️ Stop Recording",
-            format="webm",
-            sampling_rate=16000,  # 16kHz sampling rate
-            use_container_width=True
-        )
+        # Fix 13: Updated recorder with more compatible options and try multiple formats
+        try:
+            audio_data = mic_recorder(
+                key="speech-recorder",
+                start_prompt="🎙️ Start Recording",
+                stop_prompt="⏹️ Stop Recording",
+                format="webm",  # Most compatible format
+                sampling_rate=16000,  # 16kHz sampling rate
+                use_container_width=True,
+                energy_threshold=0.01,  # More sensitive detection
+                init_message="Click to start recording"
+            )
+        except Exception as e:
+            st.error(f"Error initializing microphone recorder: {e}")
+            st.info("Try refreshing the page or using a different browser.")
+            audio_data = None
 
-        # Fix 14: Add debug information for troubleshooting
+        # Fix 14: Add comprehensive debug information for troubleshooting
         if show_debug and audio_data:
-            st.write(f"Raw audio data length: {len(audio_data.get('bytes', b''))} bytes")
+            with st.expander("Debug Information"):
+                st.write("Audio Data Type:", type(audio_data))
+                if isinstance(audio_data, dict):
+                    st.write("Audio Data Keys:", list(audio_data.keys()))
+                    if 'bytes' in audio_data:
+                        st.write(f"Audio Data Size: {len(audio_data['bytes'])} bytes")
+                    if 'format' in audio_data:
+                        st.write(f"Audio Format: {audio_data['format']}")
+                    if 'sampling_rate' in audio_data:
+                        st.write(f"Sampling Rate: {audio_data['sampling_rate']} Hz")
+                else:
+                    st.write("Audio Data is not a dictionary")
         
         # Process audio data if available
         if audio_data:
             text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
             
-            if text and text != "No speech detected":
-                st.write("**📝 Transcription:**", text)
-                
-                sentiment_score = sentiment["compound"]
-                if sentiment_score > 0.1:
-                    sentiment_label, sentiment_color = "Positive 😊", "green"
-                elif sentiment_score < -0.1:
-                    sentiment_label, sentiment_color = "Negative 😔", "red"
-                else:
-                    sentiment_label, sentiment_color = "Neutral 😐", "gray"
-                
-                st.markdown(
-                    f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
-                    unsafe_allow_html=True)
-                st.markdown(
-                    f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
-                
-                sentiment_meter = st.progress(0)
-                normalized_sentiment = (sentiment_score + 1) / 2
-                sentiment_meter.progress(normalized_sentiment)
-                
-                pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
-                st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
-                
-                variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
-                st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
-            elif text == "No speech detected":
-                st.warning("No speech was detected in your recording. Please try again and speak clearly and louder.")
-                
-                # Fix 15: Added more helpful suggestions
-                st.info("""
-                **Tips for better speech detection:**
-                
-                • Speak louder and closer to the microphone
-                • Try using headphones with a microphone
-                • Make sure your browser has microphone permissions
-                • Try a recording of at least 2-3 seconds
-                • Test your microphone in another application first
-                """)
+            if text:  # Checking if text is not None
+                if text != "No speech detected":
+                    st.write("**📝 Transcription:**", text)
+                    
+                    # Ensure we have valid sentiment data
+                    if sentiment and isinstance(sentiment, dict) and 'compound' in sentiment:
+                        sentiment_score = sentiment["compound"]
+                        if sentiment_score > 0.1:
+                            sentiment_label, sentiment_color = "Positive 😊", "green"
+                        elif sentiment_score < -0.1:
+                            sentiment_label, sentiment_color = "Negative 😔", "red"
+                        else:
+                            sentiment_label, sentiment_color = "Neutral 😐", "gray"
+                        
+                        st.markdown(
+                            f"**📈 Sentiment:** <span style='color:{sentiment_color}'>{sentiment_label}</span> (Score: {sentiment_score:.2f})",
+                            unsafe_allow_html=True)
+                        st.markdown(
+                            f"**Sentiment Breakdown:** Positive: {sentiment['pos']:.2f}, Negative: {sentiment['neg']:.2f}, Neutral: {sentiment['neu']:.2f}")
+                        
+                        # Fix: Use min/max to ensure value is in valid range for progress bar
+                        normalized_sentiment = max(0.0, min(1.0, (sentiment_score + 1) / 2))
+                        sentiment_meter = st.progress(normalized_sentiment)
+                        
+                        if avg_pitch is not None:
+                            pitch_category = "High" if avg_pitch > 180 else "Medium" if avg_pitch > 120 else "Low"
+                            st.write(f"**🔊 Average Pitch:** {avg_pitch:.2f} Hz ({pitch_category})")
+                        
+                        if pitch_variance is not None:
+                            variation_category = "Monotonous" if pitch_variance < 10 else "Normal" if pitch_variance < 50 else "Expressive"
+                            st.write(f"**📊 Voice Variation:** {pitch_variance:.2f} (Type: {variation_category})")
+                elif show_debug:  
+                    # For debugging, show when no speech is detected
+                    st.warning("No speech was detected in your recording. Please try again and speak clearly and louder.")
+                    
+                    # Fix 15: Added more helpful suggestions with better formatting
+                    st.info("""
+                    **Tips for better speech detection:**
+                    
+                    • Speak louder and closer to the microphone
+                    • Try using headphones with a microphone
+                    • Make sure your browser has microphone permissions
+                    • Try a recording of at least 2-3 seconds
+                    • Test your microphone in another application first
+                    """)
+            elif show_debug:
+                st.error("Speech analysis returned None. Check console for errors.")
 
     with col2:
         st.info("**Tips for better speech recording:**\n\n"
                 "• Click **Start Recording** to begin\n\n"
-                "• Speak clearly and loudly\n\n"
-                "• Record for at least 2-3 seconds\n\n"
+                "• Speak clearly and directly into your microphone\n\n"
+                "• Record for at least 3-5 seconds\n\n"
                 "• Keep background noise to a minimum\n\n"
                 "• Use Chrome or Edge for best results")
                 
@@ -483,6 +509,7 @@ def main():
                - Click the lock/info icon in your address bar
                - Ensure microphone permissions are set to "Allow"
                - Try clearing your browser cache and reloading
+               - Restart your browser completely
             
             3. **Technical Requirements**
                - Make sure you have all required libraries installed:
@@ -498,7 +525,34 @@ def main():
                - Try restarting your browser
                - Some virtual environments or older browsers may have compatibility issues
                - Make sure your computer's audio drivers are up to date
+               
+            5. **If Nothing Works**
+               - Try using an external microphone if available
+               - Record at a higher volume
+               - Try a different computer or device
+               - Clear your browser's site data for this site
             """)
+            
+        # Add quick tech check button
+        if st.button("🔍 Run Microphone Test"):
+            st.write("Testing your microphone...")
+            try:
+                import speech_recognition as sr
+                recognizer = sr.Recognizer()
+                
+                st.success("✅ Speech recognition module loaded successfully")
+                
+                # Check for available microphones
+                mic_list = sr.Microphone.list_microphone_names()
+                st.write(f"Available Microphones: {len(mic_list)}")
+                if len(mic_list) > 0:
+                    st.write("First microphone detected:", mic_list[0])
+                    st.success("✅ Microphone detected")
+                else:
+                    st.error("❌ No microphones detected")
+            except Exception as e:
+                st.error(f"❌ Error testing microphone: {e}")
+                st.info("Try installing the SpeechRecognition package: pip install SpeechRecognition")
 
 
 if __name__ == "__main__":
