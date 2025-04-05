@@ -9,12 +9,13 @@ import io
 from pydub import AudioSegment
 from streamlit_mic_recorder import mic_recorder
 import streamlit as st
+import magic
 
 def analyze_speech_simplified(audio_path):
     """
-    Improved speech analysis function with better error handling and recognition
+    Speech analysis function with more robust transcription handling
     """
-    print(f"Starting improved speech analysis for {audio_path}")
+    print(f"Starting speech analysis with improved transcription for {audio_path}")
     start_time = time.time()
     
     # Default values in case of failure
@@ -26,78 +27,172 @@ def analyze_speech_simplified(audio_path):
     try:
         # Check if file exists and has content
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
-            print("Audio file missing or too small")
+            print(f"Audio file missing or too small: {audio_path}, size: {os.path.getsize(audio_path) if os.path.exists(audio_path) else 'file not found'}")
             return "No speech detected", sentiment, avg_pitch, pitch_variance
-            
-        # Use Google Speech-to-Text API with improved parameters
+        
+        # DEBUG: Print file info
+        print(f"Audio file size: {os.path.getsize(audio_path)} bytes")
+        
+        # First attempt: Use the recognizer directly with explicit WAV conversion
         try:
-            recognizer = sr.Recognizer()
-            # Add adjustments to the recognizer for better performance
-            recognizer.energy_threshold = 300  # Default is 300
-            recognizer.dynamic_energy_threshold = True
-            recognizer.pause_threshold = 0.8  # Default is 0.8
+            # Convert to proper WAV format if needed
+            import wave
+            import subprocess
+            import soundfile as sf
             
-            with sr.AudioFile(audio_path) as source:
-                # Adjust for ambient noise with longer duration
-                recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                audio_data = recognizer.record(source)
-                
-                # Try with Google first with increased timeout
+            # Check if it's a valid audio file and get info
+            try:
+                info = sf.info(audio_path)
+                print(f"SoundFile info: {info.samplerate}Hz, {info.channels} channels, {info.format}")
+            except Exception as sf_error:
+                print(f"SoundFile info error: {sf_error}")
+            
+            # Create a clean WAV file that should be compatible with recognizer
+            cleaned_wav_path = audio_path + "_cleaned.wav"
+            try:
+                # Try using ffmpeg for reliable conversion
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000",
+                    cleaned_wav_path
+                ], check=True, capture_output=True)
+                print("FFmpeg conversion successful")
+                use_path = cleaned_wav_path
+            except Exception as ffmpeg_error:
+                print(f"FFmpeg conversion error: {ffmpeg_error}")
+                # Fallback to direct soundfile conversion
                 try:
-                    text = recognizer.recognize_google(audio_data, language="en-US", show_all=False, timeout=10)
-                    print(f"Google STT successful: {text}")
+                    data, samplerate = sf.read(audio_path)
+                    sf.write(cleaned_wav_path, data, 16000, subtype='PCM_16')
+                    print("SoundFile conversion successful")
+                    use_path = cleaned_wav_path
+                except Exception as sf_write_error:
+                    print(f"SoundFile conversion error: {sf_write_error}")
+                    use_path = audio_path  # Use original if conversion fails
+            
+            recognizer = sr.Recognizer()
+            # Set recognizer properties for better recognition
+            recognizer.energy_threshold = 300
+            recognizer.dynamic_energy_threshold = True
+            recognizer.dynamic_energy_adjustment_damping = 0.15
+            recognizer.dynamic_energy_ratio = 1.5
+            recognizer.pause_threshold = 0.8
+            recognizer.non_speaking_duration = 0.5
+            
+            # First attempt with Google Speech Recognition
+            print(f"Opening audio file for recognition: {use_path}")
+            with sr.AudioFile(use_path) as source:
+                # Adjust for ambient noise with optimal duration
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                print("Recording from audio file...")
+                audio_data = recognizer.record(source)
+                print(f"Audio duration: approximately {len(audio_data.frame_data)/(audio_data.sample_rate*audio_data.sample_width)} seconds")
+                
+                # Try Google STT with increased timeout
+                try:
+                    print("Attempting Google STT...")
+                    text = recognizer.recognize_google(audio_data, language="en-US", timeout=15)
+                    print(f"Google STT successful: '{text}'")
                 except sr.UnknownValueError:
                     print("Google STT couldn't understand audio")
-                    text = "No speech recognized"
+                    # Try again with more aggressive noise reduction
+                    try:
+                        print("Retrying with adjusted audio...")
+                        # Try different energy threshold
+                        recognizer.energy_threshold = 50  # Lower threshold
+                        audio_data = recognizer.record(source)
+                        text = recognizer.recognize_google(audio_data, language="en-US", timeout=15)
+                        print(f"Google STT retry successful: '{text}'")
+                    except:
+                        # Try with Sphinx as fallback
+                        try:
+                            print("Attempting Sphinx fallback...")
+                            text = recognizer.recognize_sphinx(audio_data)
+                            print(f"Sphinx STT successful: '{text}'")
+                        except:
+                            text = "No speech recognized"
                 except sr.RequestError as e:
                     print(f"Google STT service error: {e}")
-                    # Try with Sphinx as fallback if Google fails
+                    # Try with Sphinx as fallback
                     try:
+                        print("Attempting Sphinx fallback due to request error...")
                         text = recognizer.recognize_sphinx(audio_data)
-                        print(f"Sphinx STT fallback successful: {text}")
+                        print(f"Sphinx STT successful: '{text}'")
                     except:
                         text = "Speech recognition service unavailable"
-        except Exception as e:
-            print(f"Speech recognition failed: {e}")
-            text = "Speech recognition failed, please try again"
-
-        # Calculate sentiment only if we have text
-        if text and text != "No speech recognized" and text != "Speech recognition failed, please try again":
-            # Use enhanced sentiment analysis
-            sentiment = get_enhanced_sentiment(text, avg_pitch, pitch_variance)
-        
-        # Generate pitch metrics using librosa
-        try:
-            y, sr = librosa.load(audio_path, sr=None, mono=True)
+        except Exception as rec_error:
+            print(f"Recognition error: {rec_error}")
             
-            # Extract pitch using a more reliable method
-            if len(y) > 0:
-                # Use librosa's pitch tracking
-                pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-                pitches = pitches[magnitudes > np.median(magnitudes)]
+            # Second attempt: Try using pydub to preprocess the audio
+            try:
+                print("Attempting alternate approach with pydub...")
+                from pydub import AudioSegment
                 
-                # Filter out extreme values
+                # Load and normalize the audio
+                audio = AudioSegment.from_file(audio_path)
+                # Convert to mono and set sample rate
+                audio = audio.set_channels(1).set_frame_rate(16000)
+                # Normalize audio
+                audio = audio.normalize()
+                # Export as WAV
+                pydub_wav_path = audio_path + "_pydub.wav"
+                audio.export(pydub_wav_path, format="wav")
+                
+                # Try recognition again
+                recognizer = sr.Recognizer()
+                with sr.AudioFile(pydub_wav_path) as source:
+                    audio_data = recognizer.record(source)
+                    try:
+                        text = recognizer.recognize_google(audio_data, language="en-US")
+                        print(f"Pydub+Google successful: '{text}'")
+                    except:
+                        try:
+                            text = recognizer.recognize_sphinx(audio_data)
+                            print(f"Pydub+Sphinx successful: '{text}'")
+                        except:
+                            text = "Speech recognition failed"
+            except Exception as pydub_error:
+                print(f"Pydub approach error: {pydub_error}")
+                text = "Speech recognition failed"
+                
+        # Continue with sentiment and pitch analysis (unchanged)
+        if text and text != "No speech recognized" and text != "Speech recognition failed":
+            # Calculate sentiment
+            sia = SentimentIntensityAnalyzer()
+            sentiment = sia.polarity_scores(text)
+            
+            # Calculate pitch metrics using librosa
+            try:
+                y, sr = librosa.load(audio_path, sr=None, mono=True)
+                
+                # Basic pitch analysis
+                pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+                # Filter out silent parts
+                pitches = pitches[magnitudes > 0.05]
                 if len(pitches) > 0:
+                    # Filter out unlikely pitch values for human speech
                     filtered_pitches = pitches[(pitches > 50) & (pitches < 400)]
                     if len(filtered_pitches) > 0:
                         avg_pitch = np.mean(filtered_pitches)
                         pitch_variance = np.std(filtered_pitches)
-                    else:
-                        # Fallback if filtering removed all values
-                        avg_pitch = 150
-                        pitch_variance = 25
-            
-        except Exception as lib_error:
-            print(f"Pitch analysis failed: {lib_error}")
-            # Keep default values if analysis fails
-            
+            except Exception as pitch_error:
+                print(f"Pitch analysis error: {pitch_error}")
+        
+        # Clean up temp files
+        for temp_path in [cleaned_wav_path, audio_path + "_pydub.wav"]:
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+                    
     except Exception as e:
         print(f"Overall analysis error: {e}")
     
     print(f"Analysis completed in {time.time() - start_time:.2f}s")
     return text, sentiment, avg_pitch, pitch_variance
 
-# Improve the audio processing pipeline
+# Improved audio processing for better transcription
 def process_audio_recording(audio_data):
     if not audio_data or 'bytes' not in audio_data or len(audio_data['bytes']) < 1000:
         st.warning("Recording appears to be empty or too short. Please try recording again.")
@@ -112,30 +207,68 @@ def process_audio_recording(audio_data):
         text, sentiment, avg_pitch, pitch_variance = None, None, None, None
         
         try:
-            # Create temp file for audio with a more reliable approach
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-                audio_path = temp_file.name
+            # Create temp file with a specific name pattern for easier debugging
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            audio_path = os.path.join(tempfile.gettempdir(), f"streamlit_audio_{timestamp}.wav")
             
-            # Use pydub to handle audio format conversion more reliably
+            # Save the raw audio data first
+            with open(audio_path, 'wb') as f:
+                f.write(audio_data['bytes'])
+            
+            print(f"Raw audio saved to {audio_path}")
+            
+            # Try to extract audio format information
             try:
-                # Convert from webm to wav using pydub
-                audio = AudioSegment.from_file(io.BytesIO(audio_data['bytes']), format="webm")
-                # Normalize audio to improve speech recognition
-                normalized_audio = audio.normalize(headroom=4.0)
-                # Export as WAV with parameters optimized for speech recognition
-                normalized_audio.export(
-                    audio_path, 
-                    format="wav",
-                    parameters=["-ac", "1", "-ar", "16000"]  # Mono, 16kHz
-                )
-                print(f"Audio successfully converted and normalized")
-            except Exception as e:
-                print(f"Pydub conversion failed: {e}. Attempting direct write.")
-                # Fallback to direct write if pydub fails
-                with open(audio_path, 'wb') as f:
-                    f.write(audio_data['bytes'])
+                # Try to determine the actual format
+                
+                file_type = magic.from_file(audio_path)
+                print(f"File type detected: {file_type}")
+            except:
+                print("Could not detect file type with magic library")
             
-            # Display audio player
+            # Convert audio using pydub with extra care
+            try:
+                from pydub import AudioSegment
+                
+                # Try to load with explicit format
+                if 'format' in audio_data and audio_data['format']:
+                    print(f"Using format from audio_data: {audio_data['format']}")
+                    audio_format = audio_data['format']
+                else:
+                    print("No format specified, assuming webm")
+                    audio_format = "webm"
+                
+                # Try different approaches to load the audio
+                try:
+                    audio = AudioSegment.from_file(audio_path, format=audio_format)
+                except:
+                    try:
+                        audio = AudioSegment.from_file(audio_path)  # Let pydub detect format
+                    except:
+                        audio = AudioSegment.from_file(io.BytesIO(audio_data['bytes']), format=audio_format)
+                
+                # Process audio for better recognition
+                audio = audio.set_channels(1)  # Convert to mono
+                audio = audio.set_frame_rate(16000)  # Set to 16kHz
+                audio = audio.normalize(headroom=4.0)  # Normalize volume
+                
+                # Save the processed audio
+                processed_audio_path = audio_path + "_processed.wav"
+                audio.export(
+                    processed_audio_path, 
+                    format="wav",
+                    parameters=["-ac", "1", "-ar", "16000"]  # Ensure mono, 16kHz
+                )
+                print(f"Processed audio saved to {processed_audio_path}")
+                
+                # Use the processed audio file for analysis
+                audio_path = processed_audio_path
+            except Exception as conversion_error:
+                print(f"Audio conversion error: {conversion_error}")
+                # Continue with the raw file
+            
+            # Display the audio player
             st.audio(audio_data['bytes'])
             
             # Run our improved analysis
@@ -143,14 +276,17 @@ def process_audio_recording(audio_data):
             
         except Exception as e:
             st.error(f"Error processing audio: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             status_msg.empty()
             # Clean up temp file
-            if audio_path and os.path.exists(audio_path):
-                try:
-                    os.unlink(audio_path)
-                except:
-                    pass
+            for path in [audio_path, audio_path + "_processed.wav"]:
+                if path and os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                    except:
+                        pass
     
     return text, sentiment, avg_pitch, pitch_variance
 
