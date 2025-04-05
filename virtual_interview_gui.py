@@ -317,7 +317,54 @@ def process_audio_chunks():
     except Exception as e:
         st.error(f"Error processing audio: {e}")
         return None
-    
+
+def speech_analysis_ui():
+    st.header("🎙️ Speech Analysis")
+    init_recording_state()
+
+    # Browser-based audio recording
+    audio_data = mic_recorder(
+        start_prompt="⏺️ Start Recording",
+        stop_prompt="⏹️ Stop Recording",
+        format="webm"
+    )
+
+    if audio_data and 'bytes' in audio_data and 'sample_rate' in audio_data:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tf:
+            write(tf.name, audio_data['sample_rate'], np.frombuffer(audio_data['bytes'], dtype=np.int16))
+            st.session_state.temp_audio_path = tf.name
+
+        st.audio(audio_data['bytes'], format="audio/webm")
+        analyze_audio()
+
+def analyze_audio():
+    if st.session_state.temp_audio_path:
+        try:
+            text, sentiment, avg_pitch, pitch_variance = analyze_speech_simplified(st.session_state.temp_audio_path)
+            
+            if text and text != "No speech recognized":
+                st.subheader("📊 Analysis Results")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**📝 Recognized Text:**")
+                    st.info(text)
+                    st.write(f"**😊 Sentiment Score:** {sentiment['compound']:.2f}")
+                with col2:
+                    st.write("**🎵 Voice Analysis**")
+                    st.write(f"• Average Pitch: {avg_pitch:.2f} Hz")
+                    st.write(f"• Pitch Variance: {pitch_variance:.2f}")
+                
+                pitch_status = "✅ Good Variation" if pitch_variance > 20 else "⚠️ Monotonous"
+                sentiment_status = "😊 Positive" if sentiment['compound'] > 0.05 else "😐 Neutral" if sentiment['compound'] > -0.05 else "😟 Negative"
+                
+                st.metric("Sentiment", sentiment_status)
+                st.metric("Pitch Variation", pitch_status)
+            else:
+                st.warning("No speech detected. Please try again.")
+        except Exception as e:
+            st.error(f"Analysis error: {str(e)}")
+
+
 # Streamlit UI
 def main():
     st.title("JobGPT - Your Personal AI-Powered Virtual Interview Coach")
