@@ -406,7 +406,6 @@ def main():
             stop_prompt="⏹️ Stop Recording",
             format="webm",
             use_container_width=True,
-            text="Speak clearly for best results"  # Added guidance
         )
         
         # Add instructions for best results
