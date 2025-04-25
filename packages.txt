@@ -1,6 +1,4 @@
-poppler-utils
 tesseract-ocr
 ffmpeg
-portaudio19-dev
 python-dev
 libgl1
