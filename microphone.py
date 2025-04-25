@@ -53,6 +53,7 @@ def record_audio_realtime():
         print("Recording... Speak now!")
         recognizer.adjust_for_ambient_noise(source, duration=1)
         audio = recognizer.listen(source)
+    
     try:
         text = recognizer.recognize_google(audio)
         print("Live Transcription:", text)
@@ -69,13 +70,24 @@ def record_audio_realtime():
         avg_pitch, pitch_variability = analyze_tone(temp_audio_path)
         print(f"Final Average Pitch (Real-time): {avg_pitch:.2f} Hz")
         
-        return text
+        # Store the audio data for potential playback
+        record_audio_realtime.audio_data = {'bytes': audio.get_wav_data()}
+        
+        # Return all three expected values
+        return text, avg_pitch, pitch_variability
+        
     except sr.UnknownValueError:
         print("Could not understand the audio.")
-        return ""
+        # Return default values when speech isn't recognized
+        return "", 0.0, 0.0
     except sr.RequestError:
         print("Error with Google Speech-to-Text API.")
-        return ""
+        # Return default values on API error
+        return "", 0.0, 0.0
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        # Return default values on any other error
+        return "", 0.0, 0.0
 
 # Example usage
 if __name__ == "__main__":
