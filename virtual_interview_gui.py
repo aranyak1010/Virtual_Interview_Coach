@@ -20,7 +20,7 @@ from scipy.io.wavfile import write
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
 from pydub import AudioSegment
-from speech_analysis import transcribe_audio, analyze_sentiment, analyze_tone, enhanced_process_audio, record_audio_realtime
+from speech_analysis import analyze_sentiment, analyze_tone, enhanced_process_audio, record_audio_realtime
 from microphone import record_audio_realtime
 import pyaudio
 import tempfile
