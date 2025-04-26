@@ -20,7 +20,8 @@ from scipy.io.wavfile import write
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
 from pydub import AudioSegment
-from speech_analysis import process_audio_recording, analyze_speech_simplified, get_enhanced_sentiment
+from speech_analysis import transcribe_audio, analyze_sentiment, analyze_tone, enhanced_process_audio, record_audio_realtime
+from microphone import record_audio_realtime
 import pyaudio
 import tempfile
 import time
@@ -244,125 +245,7 @@ def init_recording_state():
         st.session_state.is_recording = False
     if 'audio_chunks' not in st.session_state:
         st.session_state.audio_chunks = []
-
-def start_recording(status_placeholder):
-    st.session_state.is_recording = True
-    st.session_state.audio_chunks = []
-    st.session_state.start_time = time.time()
-    status_placeholder.info("🔴 Recording... Speak clearly into your microphone.")
     
-    # Start the recording thread
-    threading.Thread(target=record_audio).start()
-
-def record_audio():
-    try:
-        recognizer = sr.Recognizer()
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source)
-            
-            while st.session_state.is_recording:
-                try:
-                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
-                    # Save to a temporary file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-                        f.write(audio.get_wav_data())
-                        st.session_state.audio_chunks.append(f.name)
-                except sr.WaitTimeoutError:
-                    continue
-                except Exception as e:
-                    print(f"Recording error: {e}")
-                    break
-    except Exception as e:
-        print(f"Microphone error: {e}")
-        st.session_state.is_recording = False
-
-def stop_recording():
-    st.session_state.is_recording = False
-    # Allow a small delay for the recording thread to finish
-    time.sleep(0.5)
-
-def process_audio_chunks():
-    if not st.session_state.audio_chunks:
-        return None
-    
-    try:
-        # Create a combined audio file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as combined_file:
-            combined_path = combined_file.name
-            
-        # Combine all chunks into a single audio file
-        combined_audio = None
-        sample_rate = None
-        
-        for chunk_path in st.session_state.audio_chunks:
-            try:
-                y, sr = librosa.load(chunk_path, sr=None)
-                if combined_audio is None:
-                    combined_audio = y
-                    sample_rate = sr
-                else:
-                    combined_audio = np.concatenate((combined_audio, y))
-                    
-                # Clean up the temporary chunk file
-                os.unlink(chunk_path)
-            except Exception as e:
-                print(f"Error processing chunk {chunk_path}: {e}")
-        
-        if combined_audio is not None and sample_rate is not None:
-            sf.write(combined_path, combined_audio, sample_rate)
-            st.session_state.temp_audio_path = combined_path
-            return combined_path
-        
-        return None
-    except Exception as e:
-        st.error(f"Error processing audio: {e}")
-        return None
-
-def speech_analysis_ui():
-    st.header("🎙️ Speech Analysis")
-    init_recording_state()
-
-    # Browser-based audio recording
-    audio_data = mic_recorder(
-        start_prompt="⏺️ Start Recording",
-        stop_prompt="⏹️ Stop Recording",
-        format="webm"
-    )
-
-    if audio_data and 'bytes' in audio_data and 'sample_rate' in audio_data:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tf:
-            write(tf.name, audio_data['sample_rate'], np.frombuffer(audio_data['bytes'], dtype=np.int16))
-            st.session_state.temp_audio_path = tf.name
-
-        st.audio(audio_data['bytes'], format="audio/webm")
-        analyze_audio()
-
-def analyze_audio():
-    if st.session_state.temp_audio_path:
-        try:
-            text, sentiment, avg_pitch, pitch_variance = analyze_speech_simplified(st.session_state.temp_audio_path)
-            
-            if text and text != "No speech recognized":
-                st.subheader("📊 Analysis Results")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("**📝 Recognized Text:**")
-                    st.info(text)
-                    st.write(f"**😊 Sentiment Score:** {sentiment['compound']:.2f}")
-                with col2:
-                    st.write("**🎵 Voice Analysis**")
-                    st.write(f"• Average Pitch: {avg_pitch:.2f} Hz")
-                    st.write(f"• Pitch Variance: {pitch_variance:.2f}")
-                
-                pitch_status = "✅ Good Variation" if pitch_variance > 20 else "⚠️ Monotonous"
-                sentiment_status = "😊 Positive" if sentiment['compound'] > 0.05 else "😐 Neutral" if sentiment['compound'] > -0.05 else "😟 Negative"
-                
-                st.metric("Sentiment", sentiment_status)
-                st.metric("Pitch Variation", pitch_status)
-            else:
-                st.warning("No speech detected. Please try again.")
-        except Exception as e:
-            st.error(f"Analysis error: {str(e)}")
 
 
 # Streamlit UI
@@ -392,39 +275,81 @@ def main():
     analyze_face()
     
     # Speech analysis section
-    st.title("🎙️ Speech Analysis Tool")
+    st.header("🎙️ Speech Analysis Tool")
     st.write("Record your speech to analyze tone, sentiment, and vocal characteristics.")
-    
+
     # Initialize session state if needed
     if 'audio_processed' not in st.session_state:
         st.session_state.audio_processed = False
-    
+    if 'is_recording' not in st.session_state:
+        st.session_state.is_recording = False
+    if 'recording_type' not in st.session_state:
+        st.session_state.recording_type = None
+
     # Create two columns for layout
     col1, col2 = st.columns([3, 2])
-    
+
     with col1:
         st.subheader("Record Your Speech")
-        # Use streamlit-mic-recorder with improved settings
-        audio_data = mic_recorder(
-            key="speech_recorder",
-            start_prompt="🎙️ Start Recording",
-            stop_prompt="⏹️ Stop Recording",
-            format="webm",  # Using webm for better compatibility
-            use_container_width=True
-        )
+
+        # Option to use either streaming or file-based recording
+        recording_method = st.radio("Select recording method:", 
+                                ["Use microphone recorder", "Use real-time speech recognition"])
+
+        if recording_method == "Use microphone recorder":
+            # Use streamlit-mic-recorder with improved settings
+            audio_data = mic_recorder(
+                key="speech_recorder",
+                start_prompt="🎙️ Start Recording",
+                stop_prompt="⏹️ Stop Recording",
+                format="wav",  # Using wav format
+                use_container_width=True
+            )
         
-        # If audio data exists, process it
-        if audio_data and 'bytes' in audio_data and len(audio_data['bytes']) > 1000:
-            # Show a processing message
-            with st.spinner("Processing your recording..."):
-                # Process the audio recording
-                text, sentiment, avg_pitch, pitch_variance = process_audio_recording(audio_data)
-                st.session_state.audio_processed = True
-                st.session_state.text = text if text else "Processing completed, but no clear speech was detected. Please try again."
-                st.session_state.sentiment = sentiment
-                st.session_state.avg_pitch = avg_pitch
-                st.session_state.pitch_variance = pitch_variance
-    
+            # If audio data exists, process it
+            if audio_data and 'bytes' in audio_data and len(audio_data['bytes']) > 1000:
+                # Store the audio data in session state for playback
+                st.session_state.recorded_audio = audio_data
+            
+                # Show a processing message
+                with st.spinner("Processing your recording..."):
+                    # Process the audio recording using our integrated function
+                    text, sentiment, avg_pitch, pitch_variance = enhanced_process_audio(audio_data)
+                    st.session_state.audio_processed = True
+                    st.session_state.recording_type = "microphone"
+                    st.session_state.sentiment = sentiment
+                    st.session_state.avg_pitch = avg_pitch
+                    st.session_state.pitch_variance = pitch_variance
+
+        else:  # Use real-time speech recognition
+            if not st.session_state.is_recording:
+                if st.button("🎙️ Start Real-time Recording"):
+                    st.session_state.is_recording = True
+                    st.rerun()
+            else:
+                if st.button("⏹️ Stop Recording"):
+                    st.session_state.is_recording = False
+                    # Use the integrated record_audio_realtime function from microphone.py
+                    with st.spinner("Processing your speech..."):
+                        text, avg_pitch, pitch_variance = record_audio_realtime()
+                    
+                        if text:
+                            # Analyze sentiment
+                            sentiment = analyze_sentiment(text)
+                        
+                            # Store results in session state
+                            st.session_state.audio_processed = True
+                            st.session_state.recording_type = "realtime"
+                            st.session_state.text = text
+                            st.session_state.sentiment = sentiment
+                            st.session_state.avg_pitch = avg_pitch
+                            st.session_state.pitch_variance = pitch_variance
+                        else:
+                            st.error("No speech detected or recording failed. Please try again.")
+                    st.rerun()
+                else:
+                    st.write("🔴 Recording in progress... Click 'Stop Recording' when finished.")
+
     with col2:
         st.subheader("Recording Tips")
         st.info(
@@ -432,23 +357,26 @@ def main():
             "- Speak clearly at a normal pace\n"
             "- Minimize background noise\n"
             "- Keep recording under 30 seconds\n"
+            "- Use a good microphone if available\n"
             "- Wait for processing to complete"
         )
-    
+
     # Display results after processing
-    if st.session_state.audio_processed:
+    if st.session_state.audio_processed and st.session_state.recording_type is not None:
         st.header("📊 Analysis Results")
         
-        col_text, col_metrics = st.columns([3, 2])
-        
-        with col_text:
-            st.subheader("📝 Speech Transcript")
-            st.write(st.session_state.text)
-        
-        with col_metrics:
+        if st.session_state.recording_type == "microphone":
+            # Add playback of the recorded audio
+            if 'recorded_audio' in st.session_state and st.session_state.recorded_audio:
+                st.subheader("🔊 Your Recording")
+                st.audio(st.session_state.recorded_audio['bytes'])
+            
+            # Show sentiment and voice characteristics without transcript
+            col_metrics = st.columns(1)[0]
+            
             # Sentiment visualization
             sentiment_score = st.session_state.sentiment['compound']
-            
+        
             # Determine sentiment category
             if sentiment_score > 0.05:
                 sentiment_label = "Positive 😊"
@@ -458,22 +386,61 @@ def main():
                 sentiment_color = "red"
             else:
                 sentiment_label = "Neutral 😐"
-                sentiment_color = "blue"
-                
+                sentiment_color = "white"
+            
             st.subheader("Sentiment Analysis")
             st.markdown(f"<h3 style='color:{sentiment_color}'>{sentiment_label} ({sentiment_score:.2f})</h3>", 
-                      unsafe_allow_html=True)
-            
+                    unsafe_allow_html=True)
+        
             # Create a sentiment meter
             normalized_sentiment = (sentiment_score + 1) / 2  # Convert from [-1,1] to [0,1]
             st.progress(normalized_sentiment)
-            
+        
             # Display sentiment breakdown
             st.write(f"Positive: {st.session_state.sentiment['pos']:.2f}")
             st.write(f"Negative: {st.session_state.sentiment['neg']:.2f}")
             st.write(f"Neutral: {st.session_state.sentiment['neu']:.2f}")
         
-        # Voice characteristics
+        elif st.session_state.recording_type == "realtime":  # realtime recording
+            col_text, col_metrics = st.columns([3, 2])
+            
+            with col_text:
+                st.subheader("📝 Speech Transcript")
+                transcript = st.session_state.text
+                if transcript and transcript != "Speech processing completed.":
+                    st.write(transcript)
+                else:
+                    st.warning("No clear speech detected. Please try recording again with clearer speech.")
+            
+            with col_metrics:
+                # Sentiment visualization
+                sentiment_score = st.session_state.sentiment['compound']
+                
+                # Determine sentiment category
+                if sentiment_score > 0.05:
+                    sentiment_label = "Positive 😊"
+                    sentiment_color = "green"
+                elif sentiment_score < -0.05:
+                    sentiment_label = "Negative 😔"
+                    sentiment_color = "red"
+                else:
+                    sentiment_label = "Neutral 😐"
+                    sentiment_color = "white"
+                
+                st.subheader("Sentiment Analysis")
+                st.markdown(f"<h3 style='color:{sentiment_color}'>{sentiment_label} ({sentiment_score:.2f})</h3>", 
+                        unsafe_allow_html=True)
+                
+                # Create a sentiment meter
+                normalized_sentiment = (sentiment_score + 1) / 2  # Convert from [-1,1] to [0,1]
+                st.progress(normalized_sentiment)
+                
+                # Display sentiment breakdown
+                st.write(f"Positive: {st.session_state.sentiment['pos']:.2f}")
+                st.write(f"Negative: {st.session_state.sentiment['neg']:.2f}")
+                st.write(f"Neutral: {st.session_state.sentiment['neu']:.2f}")
+        
+        # Voice characteristics (shown for both recording types)
         st.subheader("🎵 Voice Characteristics")
         col_pitch, col_variance = st.columns(2)
         
@@ -490,7 +457,8 @@ def main():
         # Add an option to try again
         if st.button("🔄 Record New Speech"):
             st.session_state.audio_processed = False
-            st.experimental_rerun()
+            st.session_state.is_recording = False
+            st.rerun()
 
 
 if __name__ == "__main__":
